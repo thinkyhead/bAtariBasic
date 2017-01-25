@@ -13,14 +13,21 @@ The last release of **bAtari Basic** was version 1.0 in 2007, and it's getting p
 
 While it is true that we can now use `cc65` to write 2600 code directly in C, and it's been demonstrated that C++18 can be used to produce highly optimized 6502 code, *bAtariBASIC* still has some utility. 2600 programs are usually not very large or complex, and *bAtariBASIC* is great for rapid prototyping. Since I've already begun working to rectify that situation with my [6502-Tools](/thinkyhead/6502-Tools) project, it seems like an opportune time to revive *bAtariBASIC* (and provide other tools) to make it easier to develop 2600 games on macOS.
 
+## Changes so far…
+
+- Cleaned up, standardized code formatting, spacing
+- Added defines for some common constants
+- Reduced code size and repetition with inlines, macros, rewrites
+- Added a macro to output tabbed assembler. e.g., `ap("lda #1")`
+- Move private functions and data out of headers
+- Replaced tabs in strings with `\t`
+- Some support for bAtariBASIC in Sublime Text 3 (macOS)
+
 ## Planned Changes
 
-- Clean up and standardize source code formatting
-- Use macros and inlines to reduce repetition
-- Allow more complex expressions (if evaluatable at compile-time)
+- Allow more complex compile-time expressions
 - Add shorthand operators: `--`, `++`, `+=`, `*=`, `/=`, `^=`, `|=`, `&=`, `%=`
 - Add a single-binary build option with flags for preprocess, postprocess, optimize
-- Support bAtariBASIC in Sublime Text and Atom on macOS
 - Option to produce asm output for `ca65`?
 - Option to produce C output suitable for `cc65`?
 - Write some tools for making 2600 graphics in JavaScript+HTML5
