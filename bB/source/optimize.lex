@@ -31,6 +31,13 @@ char *mychar;
  if (strcmp(mystring,mystring2)) {printf(" lda %s",mystring2);BEGIN(INITIAL);}
  else {printf(" ; lda %s",mystring2);BEGIN(INITIAL);}
  }
+<rlda>"ldx"+[ \t]+[A-Za-z0-9]+ {// experimental conversion of sta val/ldx val to sta/tax
+ mychar=strtok(yytext," ");
+ strcpy(mystring2,mychar+strlen(mychar)+1); 
+ 
+ if (strcmp(mystring,mystring2)) {printf(" ldx %s",mystring2);BEGIN(INITIAL);}
+ else {printf(" tax\n");BEGIN(INITIAL);}
+ }
 <rlda>"lda"+[ \t]+[^A-Za-z0-9] {printf(" %s",yytext);BEGIN(INITIAL);}
 <rlda>"lda.w" {printf(" %s",yytext);BEGIN(INITIAL);}
 

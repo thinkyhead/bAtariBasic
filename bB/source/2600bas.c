@@ -17,7 +17,13 @@ int main(int argc, char *argv[]) {
   int multiplespace = 0;
   char *includes_file = "default.inc",
        *filename = "2600basic_variable_redefs.h",
-       *path = NULL;
+       *path = NULL,
+       def[50][100],
+       defr[50][100],
+       finalcode[500],
+       *codeadd,
+       mycode[500];
+  int defi = 0;
 
   // get command line arguments
   while ((i = getopt(argc, argv, "i:r:")) != -1) {
@@ -58,7 +64,51 @@ int main(int argc, char *argv[]) {
     incline();
 
     strcpy(displaycode, code);
-    if (!c) break; //end of file
+
+    // look for defines and remember them
+    strcpy(mycode, code);
+    for (i = 0; i < 500; ++i) if (code[i] == ' ') break;
+    if (code[i + 1] == 'd' &&
+        code[i + 2] == 'e' &&
+        code[i + 3] == 'f' &&
+        code[i + 4] == ' ') {  // found a define
+      i += 5;
+      for (j = 0; code[i] != ' '; i++)
+        def[defi][j++] = code[i]; // get the define
+      def[defi][j] = '\0';
+
+      i += 3;
+
+      for (j = 0; code[i] != '\0'; i++)
+        defr[defi][j++] = code[i]; // get the definition
+      defr[defi][j] = '\0';
+      removeCR(defr[defi]);
+      printf(";.%s.%s.\n", def[defi], defr[defi]);
+      defi++;
+    }
+    else if (defi) {
+      for (i = 0; i < defi; ++i) {
+        codeadd = NULL;
+        finalcode[0] = '\0';
+        // if (codeadd != NULL)
+        int defcount = 0;
+        while (1) {
+          if (defcount++ > 50) {
+            fprintf(stderr, "(%d) Infinitely repeating definition or too many instances of a definition\n", bbgetline());
+            exit(1);
+          }
+          codeadd = strstr(mycode, def[i]);
+          if (codeadd == NULL) break;
+          for (j = 0; j < 500; ++j) finalcode[j] = '\0';
+          strncpy(finalcode, mycode, strlen(mycode) - strlen(codeadd));
+          strcat(finalcode, defr[i]);
+          strcat(finalcode, codeadd + strlen(def[i]));
+          strcpy(mycode, finalcode);
+        }
+      }
+    }
+    if (strcmp(mycode, code)) strcpy(code, mycode);
+    if (!c) break; // end of file
 
     // preprocessing removed in favor of a simplistic lex-based preprocessor
 
@@ -91,6 +141,8 @@ int main(int argc, char *argv[]) {
       printf(".%s ; %s\n", statement[0], displaycode);
       //printf(".%s ; %s\n", statement[0], code);
     }
+    else
+      doend();
 
     //for (i = 0; i < 10; ++i) fprintf(stderr, "%s ", statement[i]);
 
@@ -101,14 +153,19 @@ int main(int argc, char *argv[]) {
   //if ((bank == 1) && (bs == 8)) newbank("2\n");
   barf_sprite_data();
 
-  printf("       echo \"    \",[(scoretable - *)]d , \"bytes of ROM space left");
+  printf(" if ECHOFIRST\n");
+  printf("       echo \"    \",[(%s - *)]d , \"bytes of ROM space left", bs == 28 ? "DPC_graphics_end" : "scoretable");
   switch (bs) {
     case 8: printf(" in bank 2"); break;
     case 16: printf(" in bank 4"); break;
+    case 28: printf(" in graphics bank"); break;
     case 32: printf(" in bank 8"); break;
+    case 64: printf(" in bank 16"); break;
   }
   printf(
     "\")\n"
+    " endif \n"
+    "ECHOFIRST = 1\n"
     " \n"
     " \n"
     " \n"

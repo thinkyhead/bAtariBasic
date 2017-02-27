@@ -58,6 +58,8 @@ int main(int argc, char *argv[]) {
           exit(1);
         }
       }
+      else if (!MATCH(line, "bB"))
+        fprintf(stderr, "User-defined %s found in current directory\n", line);
     }
     while (fgets(asmline, sizeof(asmline), asmfile)) {
       if (!strncmp(asmline, "; bB.asm file is split here", 20)) {

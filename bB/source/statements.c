@@ -30,7 +30,9 @@ static uint16_t condpart = 0,
                 branchtargetnumber = 0,
                 pfdata[50][256],
                 pfcolorindexsave,
-                pfcolornumber;
+                pfcolornumber,
+                ongosub = 0,
+                extralabel = 0;
 
 static uint8_t  last_bank = 0, // last bank when bs is enabled (0 for 2k/4k)
                 optimization = 0,
@@ -42,7 +44,10 @@ static BOOL     ROMpf = false,
                 lifekernel = false,
                 smartbranching = false,
                 doingfunction = false,
-                includesfile_already_done = false;
+                includesfile_already_done = false,
+                decimal = false,
+                macroactive = false,
+                extraactive = false;
 
 static char includespath[500],
             user_includes[1000],
@@ -59,12 +64,12 @@ static char includespath[500],
 
 void loadindex(char *);
 void jsr(char *);
+void jsrbank1(char *location);
 BOOL findlabel(char **, int i);
 void callfunction(char **);
 void mul(char **, int);
 void divd(char **, int);
 void remove_trailing_commas(char *);
-void removeCR(char *);
 int number(unsigned char);
 int getindex(char *mystatement, char *myindex);
 int findpoint(char *item);
@@ -86,6 +91,11 @@ BOOL isimmed(char *value) {
   for (int i = 0; i < numconstants; ++i)
     if (!strcmp(value, constants[i])) return 1;
 
+  if (!strcmp(value + (strlen(value) > 7 ? strlen(value) - 7 : 0), "_length")) {
+    // Warning about use of data_length before data statement
+    fprintf(stderr, "(%d): Warning: Possible use of data statement length before data statement is defined\n      Workaround: forward declaration may be done by const %s=%s at beginning of code\n", line, value, value);
+  }
+
   return value[0] == '$' || value[0] == '%' || value[0] <= '9';
 }
 
@@ -105,6 +115,10 @@ void asm_printf(const char* format, ...) {
   va_start(args, format);
   vprintf(format, args);
   va_end(args);
+}
+
+void currdir_foundmsg(char *foundfile) {
+  fprintf(stderr, "User-defined %s found in the current directory\n", foundfile);
 }
 
 void doreboot() {
@@ -129,6 +143,15 @@ void pfclear(char **statement) {
 
   invalidate_Areg();
 
+  if (bs == 28) { // [REVENG] added DPC+ pfread commands
+    ap("LDA #<C_function");
+    ap("STA DF0LOW");
+    ap("LDA #(>C_function) & $0F");
+    ap("STA DF0HI");
+    ap("LDX #28");
+    ap("STX DF0WRITE");
+  }
+
   if (CMATCH(2, '\0') || CMATCH(2, ':'))
     ap("LDA #0");
   else {
@@ -136,14 +159,22 @@ void pfclear(char **statement) {
     if (index) loadindex(&getindex0[0]);
     ap("LDA %s", indexpart(statement[2], index));
   }
+  if (bs == 28) { // DPC+
+    ap("STA DF0WRITE");
+    ap("LDA #255");
+    ap("STA CALLFUNCTION");
+  }
+  else {
+    removeCR(statement[1]);
+    jsr(statement[1]);
+  }
 
-  removeCR(statement[1]);
-  jsr(statement[1]);
 }
 
 void playfieldcolorandheight(char **statement) {
-  char data[100], rewritedata[100];
-  int i = 0, j = 0,
+  char data[200], rewritedata[200],
+       label[200];
+  int i = 0, j = 0, l,
       pfpos = 0, pfoffset = 0, indexsave;
   // PF colors and/or heights
   // PFheights use offset of 21-31
@@ -151,9 +182,25 @@ void playfieldcolorandheight(char **statement) {
   // if used together: playfieldblocksize-88, playfieldcolor-87
   if (!strncasecmp(statement[1], "pfheights:", 9)) { // doesn't look for the colon
     if ((kernel_options & (_BV(KERN_PFCOLORS) | _BV(KERN_PFHEIGHTS))) == _BV(KERN_PFHEIGHTS)) {
-      sprintf(sprite_data[sprite_index++], " if (<*) > 223\n");
-      sprintf(sprite_data[sprite_index++], "   repeat (277-<*)\n" a(".byte 0"));
+
+      sprintf(sprite_data[sprite_index++], " ifconst pfres\n");
+      sprintf(sprite_data[sprite_index++], " if (<*) > 235-pfres\n");
+      sprintf(sprite_data[sprite_index++], "   repeat (265+pfres-<*)\n" a(".byte 0"));
       sprintf(sprite_data[sprite_index++], "   repend\n endif\n");
+      sprintf(sprite_data[sprite_index++], "   if (<*) < (pfres+9)\n"); //[REVENG] added padding to avoid page crossing
+      sprintf(sprite_data[sprite_index++], "     repeat ((pfres+9)-(<*))\n" a(".byte 0"));
+      sprintf(sprite_data[sprite_index++], "     repend\n");
+      sprintf(sprite_data[sprite_index++], "   endif\n");
+      sprintf(sprite_data[sprite_index++], " else\n");
+      sprintf(sprite_data[sprite_index++], "   if (<*) > 223\n");
+      sprintf(sprite_data[sprite_index++], "     repeat (277-<*)\n" a(".byte 0"));
+      sprintf(sprite_data[sprite_index++], "     repend\n");
+      sprintf(sprite_data[sprite_index++], "   endif\n");
+      sprintf(sprite_data[sprite_index++], "   if (<*) < 21\n"); //[REVENG] added padding to avoid page crossing
+      sprintf(sprite_data[sprite_index++], "     repeat (21-(<*))\n" a(".byte 0"));
+      sprintf(sprite_data[sprite_index++], "     repend\n");
+      sprintf(sprite_data[sprite_index++], "   endif\n");
+      sprintf(sprite_data[sprite_index++], " endif\n");
       sprintf(sprite_data[sprite_index], "pfcolorlabel%d\n", sprite_index);
       indexsave = sprite_index;
       sprite_index++;
@@ -172,9 +219,17 @@ void playfieldcolorandheight(char **statement) {
         else sprintf(sprite_data[sprite_index++], a(".byte %s"), data);
         pfpos++;
       }
+      printf(" ifconst pfres\n");
+      ap("LDA #>(pfcolorlabel%d-pfres-9)", indexsave);
+      printf(" else\n");
       ap("LDA #>(pfcolorlabel%d-21)", indexsave);
+      printf(" endif\n");
       ap("STA pfcolortable+1");
+      printf(" ifconst pfres\n");
+      ap("LDA #<(pfcolorlabel%d-pfres-9)", indexsave);
+      printf(" else\n");
       ap("LDA #<(pfcolorlabel%d-21)", indexsave);
+      printf(" endif\n");
       ap("STA pfcolortable");
     }
     else if ((kernel_options & (_BV(KERN_PFCOLORS) | _BV(KERN_PFHEIGHTS))) != (_BV(KERN_PFCOLORS) | _BV(KERN_PFHEIGHTS))) {
@@ -182,11 +237,19 @@ void playfieldcolorandheight(char **statement) {
       exit(1);
     }
     else { // pf color and heights enabled
+      sprintf(sprite_data[sprite_index++], " ifconst pfres\n");
+      sprintf(sprite_data[sprite_index++], " if (<*) > (254-pfres)\n");
+      sprintf(sprite_data[sprite_index++], "   align 256\n endif\n");
+      sprintf(sprite_data[sprite_index++], " if (<*) < (136-pfres*pfwidth)\n");
+      sprintf(sprite_data[sprite_index++], "   repeat ((136-pfres*pfwidth)-(<*))\n" a(".byte 0"));
+      sprintf(sprite_data[sprite_index++], "   repend\n endif\n");
+      sprintf(sprite_data[sprite_index++], " else\n");
       sprintf(sprite_data[sprite_index++], " if (<*) > 206\n");
       sprintf(sprite_data[sprite_index++], "   align 256\n endif\n");
       sprintf(sprite_data[sprite_index++], " if (<*) < 88\n");
       sprintf(sprite_data[sprite_index++], "   repeat (88-(<*))\n" a(".byte 0"));
       sprintf(sprite_data[sprite_index++], "   repend\n endif\n");
+      sprintf(sprite_data[sprite_index++], " endif\n");
       sprintf(sprite_data[sprite_index++], "playfieldcolorandheight\n");
 
       pfcolorindexsave = sprite_index;
@@ -209,13 +272,56 @@ void playfieldcolorandheight(char **statement) {
     }
   }
   else { // has to be pfcolors
+    if (multisprite == 2) {
+      l = 0;
+      sprintf(label, "playfieldcolor%s\n", statement[0]);
+      removeCR(label);
+      ap("LDA #<PFCOLS");
+      ap("STA DF0LOW");
+      ap("LDA #(>PFCOLS) & $0F");
+      ap("STA DF0HI");
+      ap("LDA #<%s", label);
+      ap("STA PARAMETER");
+      ap("LDA #((>%s) & $0f) | (((>%s) / 2) & $70)", label, label); // DPC+
+      ap("STA PARAMETER");
+      ap("LDA #0");
+      ap("STA PARAMETER");
+
+      sprintf(sprite_data[sprite_index++], "%s\n", label);
+      while (1) {
+        if ((!fgets(data, sizeof(data), stdin) || (data[0] <= '9' && data[0] >= '0')) && data[0] != 'e') {
+          prerror("Error: Missing \"end\" keyword at end of pfcolor declaration\n");
+          exit(1);
+        }
+        line++;
+        if (MATCH(data, "end")) break;
+        sprintf(sprite_data[sprite_index++], "\t.byte %s", data);
+        l++;
+      }
+      if (l > 255)
+        prerror("Error: too much data in pfcolor declaration\n");
+      ap("LDA #%d", l);
+      ap("STA PARAMETER");
+      ap("LDA #1");
+      ap("STA CALLFUNCTION");
+      return; // get out
+    }
     if ((kernel_options & (_BV(KERN_PFCOLORS) | _BV(KERN_PFHEIGHTS))) == _BV(KERN_PFCOLORS)) {
       if (!pfcolornumber) {
+        sprintf(sprite_data[sprite_index++], " ifconst pfres\n");
+        sprintf(sprite_data[sprite_index++], " if (<*) > (254-pfres*pfwidth)\n");
+        sprintf(sprite_data[sprite_index++], "   align 256\n endif\n");
+        sprintf(sprite_data[sprite_index++], " if (<*) < (136-pfres*pfwidth)\n");
+        sprintf(sprite_data[sprite_index++], "   repeat ((136-pfres*pfwidth)-(<*))\n" a(".byte 0"));
+        sprintf(sprite_data[sprite_index++], "   repend\n endif\n");
+        sprintf(sprite_data[sprite_index++], " else\n");
+
         sprintf(sprite_data[sprite_index++], " if (<*) > 206\n");
         sprintf(sprite_data[sprite_index++], "   align 256\n endif\n");
         sprintf(sprite_data[sprite_index++], " if (<*) < 88\n");
         sprintf(sprite_data[sprite_index++], "   repeat (88-(<*))\n" a(".byte 0"));
         sprintf(sprite_data[sprite_index++], "   repend\n endif\n");
+        sprintf(sprite_data[sprite_index++], " endif\n");
         sprintf(sprite_data[sprite_index], "pfcolorlabel%d\n", sprite_index);
         sprite_index++;
       }
@@ -243,7 +349,7 @@ void playfieldcolorandheight(char **statement) {
             j = 0; i = 0;
             while (j != (pfcolornumber + 3) % 4) {
               if (sprite_data[pfcolorindexsave + pfoffset][i++] == ',') j++;
-              if (i > 99) {
+              if (i > 199) {
                 prerror("Warning: size of subsequent pfcolor tables should match\n");
                 break;
               }
@@ -251,7 +357,7 @@ void playfieldcolorandheight(char **statement) {
             //fprintf(stderr, "%s\n", sprite_data[pfcolorindexsave + pfoffset]);
             strcpy(rewritedata, sprite_data[pfcolorindexsave + pfoffset]);
             rewritedata[i - 1] = '\0';
-            if (i < 100) sprintf(sprite_data[pfcolorindexsave + pfoffset++], "%s,%s%s", rewritedata, data, rewritedata + i + 1);
+            if (i < 200) sprintf(sprite_data[pfcolorindexsave + pfoffset++], "%s,%s%s", rewritedata, data, rewritedata + i + 1);
           }
           else { // new table
             sprintf(sprite_data[sprite_index++], a(".byte %s,0,0,0"), data);
@@ -259,10 +365,17 @@ void playfieldcolorandheight(char **statement) {
           }
         }
       }
+      printf(" ifconst pfres\n");
+      ap("LDA #>(pfcolorlabel%d-%d+pfres*pfwidth)", pfcolorindexsave, 85 + 48 - pfcolornumber - ((((pfcolornumber << 1) | (pfcolornumber << 2)) ^ 4) & 4));
+      printf(" else\n");
       ap("LDA #>(pfcolorlabel%d-%d)", pfcolorindexsave, 85 - pfcolornumber - ((((pfcolornumber << 1) | (pfcolornumber << 2)) ^ 4) & 4));
+      printf(" endif\n");
       ap("STA pfcolortable+1");
+      printf(" ifconst pfres\n");
+      ap("LDA #<(pfcolorlabel%d-%d+pfres*pfwidth)", pfcolorindexsave, 85 + 48 - pfcolornumber - ((((pfcolornumber << 1) | (pfcolornumber << 2)) ^ 4) & 4));
+      printf(" else\n");
       ap("LDA #<(pfcolorlabel%d-%d)", pfcolorindexsave, 85 - pfcolornumber - ((((pfcolornumber << 1) | (pfcolornumber << 2)) ^ 4) & 4));
-      //ap("lda #<(pfcolorlabel%d-%d)", pfcolorindexsave, 85 - pfcolornumber);
+      printf(" endif\n");
       ap("STA pfcolortable");
     }
     else if ((kernel_options & (_BV(KERN_PFCOLORS) | _BV(KERN_PFHEIGHTS))) != (_BV(KERN_PFCOLORS) | _BV(KERN_PFHEIGHTS))) {
@@ -287,7 +400,7 @@ void playfieldcolorandheight(char **statement) {
           j = 0; i = 0;
           while (!j) {
             if (sprite_data[pfcolorindexsave + pfoffset][i++] == ',') j++;
-            if (i > 99) {
+            if (i > 199) {
               prerror("Warning: size of subsequent pfcolor tables should match\n");
               break;
             }
@@ -295,7 +408,7 @@ void playfieldcolorandheight(char **statement) {
           //fprintf(stderr, "%s\n", sprite_data[pfcolorindexsave + pfoffset]);
           strcpy(rewritedata, sprite_data[pfcolorindexsave + pfoffset]);
           rewritedata[i - 1] = '\0';
-          if (i < 100) sprintf(sprite_data[pfcolorindexsave + pfoffset++], "%s,%s%s", rewritedata, data, rewritedata + i + 1);
+          if (i < 200) sprintf(sprite_data[pfcolorindexsave + pfoffset++], "%s,%s%s", rewritedata, data, rewritedata + i + 1);
         }
         pfpos++;
       }
@@ -307,7 +420,7 @@ void playfield(char **statement) {
   int i, j, k, l = 0;
   // for specifying a ROM playfield
   char zero = '.', one = 'X',
-       data[100], pframdata[50][100];
+       data[200], pframdata[255][200];
   if ((unsigned char)statement[2][0] > ' ') zero = statement[2][0];
   if ((unsigned char)statement[3][0] > ' ') one = statement[3][0];
 
@@ -348,11 +461,14 @@ void playfield(char **statement) {
     ap("STA PF2pointer+1");
     playfield_number++;
   }
-  else { // RAM pf, as in std_kernel
+  else if (bs != 28) { // RAM pf, as in std_kernel, not DPC+
     printf("  ifconst pfres\n");
-    ap("LDX #4*pfres-1");
+    //printf("    ldx #4*pfres-1\n");
+    ap("LDX #(%d>pfres)*(pfres*pfwidth-1)+(%d<=pfres)*%d", l, l, l * 4 - 1);
     printf("  else\n");
-    ap("LDX #47");
+    //ap("LDX #47");
+    //ap("LDX #%d", l * 4 - 1 > 47 ? 47 : l * 4 - 1);
+    ap("LDX #((%d*pfwidth-1)*((%d*pfwidth-1)<47))+(47*((%d*pfwidth-1)>=47))", l, l, l);
     printf("  endif\n");
     ap("JMP pflabel%d", playfield_number);
 
@@ -365,25 +481,25 @@ void playfield(char **statement) {
       for (k = 0; k < 8; ++k)    printf(pframdata[j][k] == one ? "1" : "0");
       printf(", %%");
       for (k = 15; k >= 8; k--)  printf(pframdata[j][k] == one ? "1" : "0");
-      printf(", %%");
+      printf("\n if (pfwidth>2)\n\t.byte %%");
       for (k = 16; k < 24; ++k)  printf(pframdata[j][k] == one ? "1" : "0");
       printf(", %%");
       for (k = 31; k >= 24; k--) printf(pframdata[j][k] == one ? "1" : "0");
-      printf("\n");
+      printf("\n endif\n");
     }
 
     printf("pflabel%d\n", playfield_number);
     ap("LDA PF_data%d,x", playfield_number);
     if (superchip) {
       //printf("  ifconst pfres\n");
-      //ap("STA playfield+48-pfres*4-128,x");
+      //ap("STA playfield+48-pfres*pfwidth-128,x");
       //printf("  else\n");
       ap("STA playfield-128,x");
       //printf("  endif\n");
     }
     else {
       //printf("  ifconst pfres\n");
-      //ap("STA playfield+48-pfres*4,x");
+      //ap("STA playfield+48-pfres*pfwidth,x");
       //printf("  else\n");
       ap("STA playfield,x");
       //printf("  endif\n");
@@ -391,6 +507,30 @@ void playfield(char **statement) {
     ap("DEX");
     ap("BPL pflabel%d", playfield_number);
     playfield_number++;
+  }
+  else { // RAM pf in DPC+
+    // l is pf data height
+    playfield_number++;
+    ap("LDY #%d", l);
+    ap("LDA #<PF_data%d", playfield_number);
+    ap("LDX #((>PF_data%d) & $0f) | (((>PF_data%d) / 2) & $70)", playfield_number, playfield_number);
+    jsrbank1("pfsetup");
+
+    // use sprite data recorder for pf data
+    sprintf(sprite_data[sprite_index++], "PF_data%d\n", playfield_number);
+
+    int b[4] = { 31, 16, 15,  0 },
+        e[4] = { 23, 24,  7,  8 },
+        s[4] = { -1,  1, -1,  1 };
+    for (i = 0; i < 4; i++) {
+      for (j = 0; j < l; ++j) { // stored right side up
+        sprintf(data, "\t.byte %%");
+        for (k = b[i]; k != e[i]; k += s[i])
+          strcat(data, pframdata[j][k] == one ? "1" : "0");
+        strcat(data, "\n");
+        strcpy(sprite_data[sprite_index++], data);
+      }
+    }
 
   }
 
@@ -410,7 +550,10 @@ void jsr(char *location) {
   // we need to switch banks
   ap("STA temp7");
   // first create virtual return address
-  ap("LDA #>(ret_point%d-1)", ++numjsrs);
+  if (bs == 64) // [REVENG]
+    ap("LDA #(((>(ret_point%d-1)) & $0F) | $%1x0)", ++numjsrs, bank - 1);
+  else
+    ap("LDA #>(ret_point%d-1)", ++numjsrs);
   ap("PHA");
   ap("LDA #<(ret_point%d-1)", numjsrs);
   ap("PHA");
@@ -441,7 +584,11 @@ void jsrbank1(char *location) {
   // we need to switch banks
   ap("STA temp7");
   // first create virtual return address
-  ap("LDA #>(ret_point%d-1)", ++numjsrs);
+  // [REVENG] if it's 64k banks, store the bank directly in the high nybble
+  if (bs == 64)
+    ap("LDA #(((>(ret_point%d-1)) & $0F) | $%1x0)", ++numjsrs, bank - 1);
+  else
+    ap("LDA #>(ret_point%d-1)", ++numjsrs);
   ap("PHA");
   ap("LDA #<(ret_point%d-1)", numjsrs);
   ap("PHA");
@@ -461,36 +608,44 @@ void jsrbank1(char *location) {
   printf("ret_point%d\n", numjsrs);
 }
 
-void switchjoy(char *input_source) {
+int switchjoy(char *input_source) {
   // place joystick/console switch reading code inline instead of as a subroutine
   // standard routines needed for pretty much all games
   // read switches, joysticks now compiler generated (more efficient)
 
+  // returns 0 if we need beq/bne, 1 if bvc/bvs, and 2 if bpl/bmi
+
   //invalidate_Areg()  // do we need this?
 
+  int ret = 0;
   char *val = NULL, *bit = NULL;
 
        if (MATCH(input_source, "switchreset"))  val = "01", bit = "SWCHB";
   else if (MATCH(input_source, "switchselect")) val = "02", bit = "SWCHB";
-  else if (MATCH(input_source, "switchleftb"))  val = "40", bit = "SWCHB";
-  else if (MATCH(input_source, "switchrightb")) val = "80", bit = "SWCHB";
+  else if (MATCH(input_source, "switchleftb"))  val = "40", bit = "SWCHB", ret = 1;
+  else if (MATCH(input_source, "switchrightb")) val = "80", bit = "SWCHB", ret = 2;
   else if (MATCH(input_source, "switchbw"))     val = "08", bit = "SWCHB";
   else if (MATCH(input_source, "joy0up"))       val = "10", bit = "SWCHA";
   else if (MATCH(input_source, "joy0down"))     val = "20", bit = "SWCHA";
-  else if (MATCH(input_source, "joy0left"))     val = "40", bit = "SWCHA";
-  else if (MATCH(input_source, "joy0right"))    val = "80", bit = "SWCHA";
+  else if (MATCH(input_source, "joy0left"))     val = "40", bit = "SWCHA", ret = 1;
+  else if (MATCH(input_source, "joy0right"))    val = "80", bit = "SWCHA", ret = 2;
   else if (MATCH(input_source, "joy1up"))       val = "01", bit = "SWCHA";
   else if (MATCH(input_source, "joy1down"))     val = "02", bit = "SWCHA";
   else if (MATCH(input_source, "joy1left"))     val = "04", bit = "SWCHA";
   else if (MATCH(input_source, "joy1right"))    val = "08", bit = "SWCHA";
-  else if (MATCH(input_source, "joy0fire"))     val = "80", bit = "INPT4";
-  else if (MATCH(input_source, "joy1fire"))     val = "80", bit = "INPT5";
+  else if (MATCH(input_source, "joy0fire"))     val = "80", bit = "INPT4", ret = 2;
+  else if (MATCH(input_source, "joy1fire"))     val = "80", bit = "INPT5", ret = 2;
 
   if (val) {
     ap("LDA #$%s", val);
     ap("BIT %s", bit);
   }
-  else prerror("invalid console switch/controller reference\n");
+  else {
+    prerror("invalid console switch/controller reference\n");
+    exit(1);
+  }
+
+  return ret;
 }
 
 void newbank(int bankno) {
@@ -516,7 +671,10 @@ void newbank(int bankno) {
   bank = bankno;
   if (bank > last_bank) prerror("bank not supported\n");
 
+  printf(" if ECHO%d\n", bank - 1);
   printf(" echo \"    \",[(start_bank%d - *)]d , \"bytes of ROM space left in bank %d\")\n", bank - 1, bank - 1);
+  printf(" endif\n");
+  printf("ECHO%d = 1\n", bank - 1);
 
   // now display banksw.asm file
 
@@ -526,15 +684,29 @@ void newbank(int bankno) {
       exit(1);
     }
   }
+  else
+    currdir_foundmsg("banksw.asm");
 
   while (fgets(line, 500, bs_support))
     if (MATCH(line, ";size=")) break;
 
   len = atoi(line + 6);
+
+  // [REVENG]
+  if (bs == 64) len += 4; //kludge
+
   if (bank == 2) sprintf(redefined_variables[numredefvars++], "bscode_length = %d", len);
 
-  printf(" ORG $%dFF4-bscode_length\n", bank - 1);
-  printf(" RORG $%XF4-bscode_length\n", (15 - bs / 2 + 2 * (bank - 1)) * 16 + 15);
+  if (bs == 64) // [REVENG]
+    printf(" ORG $%1XFE0-bscode_length\n", bank - 1);
+  else
+    printf(" ORG $%dFF4-bscode_length\n", bank - 1);
+
+  if (bs == 28)
+    printf(" RORG $%XF4-bscode_length\n", (2 * (bank - 1) - 1) * 16 + 15);
+  else // [REVENG]
+    printf(" RORG $%XE0-bscode_length\n", ((bs == 64 ? 31 : 15) - bs / 2 + 2 * (bank - 1)) * 16 + 15);
+
   printf("start_bank%d", bank - 1);
 
   while (fgets(line, 500, bs_support))
@@ -542,17 +714,44 @@ void newbank(int bankno) {
 
   fclose(bs_support);
 
-  // startup vectors
-  printf(" ORG $%dFFC\n", bank - 1);
-  printf(" RORG $%XFC\n", (15 - bs / 2 + 2 * (bank - 1)) * 16 + 15);
+  printf(" ORG $%1XFFC\n", bank - 1);
+
+  if (bs == 28)
+    printf(" RORG $%XFC\n", (2 * (bank - 1) - 1) * 16 + 15);
+  else // [REVENG]
+    printf(" RORG $%XFC\n", ((bs == 64 ? 31 : 15) - bs / 2 + 2 * (bank - 1)) * 16 + 15);
 
   ap(".word start_bank%d", bank - 1);
   ap(".word start_bank%d", bank - 1);
 
   // now end
-  printf(" ORG $%d000\n", bank);
-  printf(" RORG $%X00\n", (15 - bs / 2 + 2 * bank) * 16);
-  if (superchip) printf(" repeat 256\n" a(".byte $ff") " repend\n");
+  printf(" ORG $%1X000\n", bank);
+  if (bs == 28) {
+    printf(" RORG $%X00\n", (2 * bank - 1) * 16);
+    switch (bank) {
+      case 2: // probably a better way to do this!!!
+        printf("HMdiv\n");
+        ap(".byte 0, 0, 0, 0, 0, 0, 0");
+        ap(".byte 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2");
+        ap(".byte 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3");
+        ap(".byte 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4");
+        ap(".byte 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5");
+        ap(".byte 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6");
+        ap(".byte 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7");
+        ap(".byte 7, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8");
+        ap(".byte 8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 9");
+        ap(".byte 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10");
+        ap(".byte 10,10,10,10,10,10,0,0,0");
+        break;
+      default:
+        printf(" repeat 129\n .byte 0\n repend\n");
+    }
+  }
+  // [REVENG]
+  else
+    printf(" RORG $%X00\n", ((bs == 64 ? 31 : 15) - bs / 2 + 2 * bank) * 16);
+
+  if (superchip) printf(" repeat 256\n .byte $ff\n repend\n");
 
   if (bank == last_bank) printf("; bB.asm file is split here\n");
 
@@ -562,6 +761,7 @@ void newbank(int bankno) {
 
 float immed_fixpoint(char *fixpointval) {
   int i = findpoint(fixpointval);
+  if (i == 50) return 0; // failsafe
   char decimalpart[50];
   fixpointval[i] = '\0';
   sprintf(decimalpart, "0.%s", fixpointval + i + 1);
@@ -617,55 +817,82 @@ void set_romsize(char *size) {
   if (MATCH(size, "2k")) {
     strcpy(redefined_variables[numredefvars++], "ROM2k = 1");
   }
-  else {
-    int bshs = 0, bsnum = 0, bsmask = 0;
-    char *sup = NULL;
-    if (MATCH(size, "8k")) {
-      bs = 8;
-      last_bank = 2;
-      bshs = 0x1FF8;
-      bsnum = 8;
-      bsmask = 1;
-      sup = "8kSC";
+  else if (MATCH(size, "8k")) {
+    bs = 8;
+    last_bank = 2;
+    if (MATCH(size, "8kEB"))
+      strcpy(redefined_variables[numredefvars++], "bankswitch_hotspot = $083F");
+    else
+      strcpy(redefined_variables[numredefvars++], "bankswitch_hotspot = $1FF8");
+    strcpy(redefined_variables[numredefvars++], "bankswitch = 8");
+    strcpy(redefined_variables[numredefvars++], "bs_mask = 1");
+    if (MATCH(size, "8kSC")) {
+      strcpy(redefined_variables[numredefvars++], "superchip = 1");
+      create_includes("superchip.inc");
+      superchip = true;
     }
-    else if (MATCH(size, "16k")) {
-      bs = 16;
-      last_bank = 4;
-      bshs = 0x1FF6;
-      bsnum = 16;
-      bsmask = 3;
-      sup = "16kSC";
+    else
+      create_includes("bankswitch.inc");
+  }
+  else if (!strncmp(size, "16k", 2)) {
+    bs = 16;
+    last_bank = 4;
+    strcpy(redefined_variables[numredefvars++], "bankswitch_hotspot = $1FF6");
+    strcpy(redefined_variables[numredefvars++], "bankswitch = 16");
+    strcpy(redefined_variables[numredefvars++], "bs_mask = 3");
+    if (MATCH(size, "16kSC")) {
+      strcpy(redefined_variables[numredefvars++], "superchip = 1");
+      create_includes("superchip.inc");
+      superchip = true;
     }
-    else if (MATCH(size, "32k")) {
-      bs = 32;
-      last_bank = 8;
-      bshs = 0x1FF4;
-      bsnum = 32;
-      bsmask = 7;
-      //if (multisprite == 1) create_includes("multisprite_bankswitch.inc");
-      //else
-      sup = "32kSC";
+    else
+      create_includes("bankswitch.inc");
+  }
+  else if (!strncmp(size, "32k", 2)) {
+    bs = 32;
+    last_bank = 8;
+    strcpy(redefined_variables[numredefvars++], "bankswitch_hotspot = $1FF4");
+    strcpy(redefined_variables[numredefvars++], "bankswitch = 32");
+    strcpy(redefined_variables[numredefvars++], "bs_mask = 7");
+    //if (multisprite == 1) create_includes("multisprite_bankswitch.inc");
+    //else
+    if (MATCH(size, "32kSC")) {
+      strcpy(redefined_variables[numredefvars++], "superchip = 1");
+      create_includes("superchip.inc");
+      superchip = true;
     }
+    else
+      create_includes("bankswitch.inc");
+  }
 
-    if (bshs) {
-      sprintf(redefined_variables[numredefvars++], "bankswitch_hotspot = $%04X", bshs);
-      sprintf(redefined_variables[numredefvars], "bankswitch = %d", bsnum);
-      sprintf(redefined_variables[numredefvars], "bs_mask = %d", bsmask);
-      if (MATCH(size, sup)) {
-        strcpy(redefined_variables[numredefvars++], "superchip = 1");
-        create_includes("superchip.inc");
-        superchip = true;
-      }
-      else
-        create_includes("bankswitch.inc");
+  //REVENG EF START
+  else if (!strncmp(size, "64k", 2)) {
+    bs = 64;
+    last_bank = 16;
+    strcpy(redefined_variables[numredefvars++], "bankswitch_hotspot = $1FE0");
+    strcpy(redefined_variables[numredefvars++], "bankswitch = 64");
+    strcpy(redefined_variables[numredefvars++], "bs_mask = 15");
+    //if (multisprite == 1) create_includes("multisprite_bankswitch.inc");
+    //else
+    if (MATCH(size, "64kSC")) {
+      strcpy(redefined_variables[numredefvars++], "superchip = 1");
+      create_includes("superchip.inc");
+      superchip = true;
     }
-    else if (strncmp(size, "4k", 2)) {
-      fprintf(stderr, "Warning: unsupported ROM size: %s Using 4k.\n", size);
-    }
+    else
+      create_includes("bankswitch.inc");
+  }
+  //REVENG EF END
+
+  else if (strncmp(size, "4k", 2)) {
+    fprintf(stderr, "Warning: unsupported ROM size: %s Using 4k.\n", size);
   }
 }
 
-void add_includes(char *myinclude) { strcat(user_includes, myinclude); }
+void add_includes(char *myinclude) {
+  if (includesfile_already_done) fprintf(stderr, "%d: Warning: include ignored (includes should typically precede other commands)\n", line);
+  strcat(user_includes, myinclude);
+}
 
 void add_inline(char *myinclude) { printf(" include %s\n", myinclude); }
 
@@ -742,6 +969,8 @@ void create_includes(char *includesfile) {
       exit(1);
     }
   }
+  else currdir_foundmsg(includesfile);
+
   if (!(includeswrite = fopen("includes.bB", "w"))) { // open file
     fprintf(stderr, "Cannot open includes.bB for writing\n");
     exit(1);
@@ -767,7 +996,8 @@ void create_includes(char *includesfile) {
 }
 
 void loadindex(char *myindex) {
-  ap("LDX %s%s", immedtok(myindex), myindex); // get index
+  if (strncmp(myindex, "TSX", 3))
+    ap("LDX %s%s", immedtok(myindex), myindex); // get index
 }
 
 int getindex(char *mystatement, char *myindex) {
@@ -788,8 +1018,9 @@ int getindex(char *mystatement, char *myindex) {
 
 int checkmul(int value) {
   // check to see if value can be optimized to save cycles
-  if (!(value & 1)) return 1;
+  if (!(value & 1)) return 1; //[REVENG] still faster than sub
   if (value < 11) return 1;  // always optimize these
+  //if (!(value % 2)) return 1;
 
   while (value != 1) {
     if (!(value % 9)) value /= 9;
@@ -815,8 +1046,7 @@ int checkdiv(int value) {
 void mul(char **statement, int bits) {
   // this will attempt to output optimized code depending on the multiplicand
   int multiplicand = atoi(statement[6]),
-      tempstorage = 0, apply3_5_9;
-
+      tempstorage = 0;
   // we will optimize specifically for 2,3,5,7,9
   char *asl;
   if (bits == 16) {
@@ -828,15 +1058,25 @@ void mul(char **statement, int bits) {
     asl = a("ASL");
 
   while (multiplicand != 1) {
-    apply3_5_9 = 0;
     if (!(multiplicand % 9)) {
       if (tempstorage) {
         strcpy(statement[4], "temp2");
         ap("STA temp2");
       }
+      multiplicand /= 9;
       printf("%s", asl);
       printf("%s", asl);
-      apply3_5_9 = 9;
+      printf("%s", asl);
+      ap("CLC");
+      ap("ADC %s%s", immedtok(statement[4]), statement[4]);
+      if (bits == 16) {
+        ap("TAX");
+        ap("LDA temp1");
+        ap("ADC #0");
+        ap("STA temp1");
+        ap("TXA");
+      }
+      tempstorage = 1;
     }
     else if (!(multiplicand % 7)) {
       if (tempstorage) {
@@ -863,29 +1103,8 @@ void mul(char **statement, int bits) {
         strcpy(statement[4], "temp2");
         ap("STA temp2");
       }
+      multiplicand /= 5;
       printf("%s", asl);
-      apply3_5_9 = 5;
-    }
-    else if (!(multiplicand % 3)) {
-      if (tempstorage) {
-        strcpy(statement[4], "temp2");
-        ap("STA temp2");
-      }
-      apply3_5_9 = 3;
-    }
-    else if (!(multiplicand & 1)) {
-      multiplicand >>= 1;
-      printf("%s", asl);
-    }
-    else {
-      ap("LDY #%d", multiplicand);
-      ap("JSR mul%d", bits);
-      fprintf(stderr, "Warning - there seems to be a problem.  Your code may not run properly.\n");
-      fprintf(stderr, "If you are seeing this message, please report it - it could be a bug.\n");
-      // WARNING: not fixed up for bankswitching
-    }
-
-    if (apply3_5_9) {
       printf("%s", asl);
       ap("CLC");
       ap("ADC %s%s", immedtok(statement[4]), statement[4]);
@@ -897,7 +1116,35 @@ void mul(char **statement, int bits) {
         ap("TXA");
       }
       tempstorage = 1;
-      multiplicand /= apply3_5_9;
+    }
+    else if (!(multiplicand % 3)) {
+      if (tempstorage) {
+        strcpy(statement[4], "temp2");
+        ap("STA temp2");
+      }
+      multiplicand /= 3;
+      printf("%s", asl);
+      ap("CLC");
+      ap("ADC %s%s", immedtok(statement[4]), statement[4]);
+      if (bits == 16) {
+        ap("TAX");
+        ap("LDA temp1");
+        ap("ADC #0");
+        ap("STA temp1");
+        ap("TXA");
+      }
+      tempstorage = 1;
+    }
+    else if (!(multiplicand & 1)) {
+      multiplicand >>= 1;
+      printf("%s", asl);
+    }
+    else {
+      ap("LDY #%d", multiplicand);
+      ap("JSR mul%d", bits);
+      fprintf(stderr, "Warning - there seems to be a problem.  Your code may not run properly.\n");
+      fprintf(stderr, "If you are seeing this message, please report it - it could be a bug.\n");
+      // WARNING: not fixed up for bankswitching
     }
   }
 }
@@ -948,7 +1195,7 @@ void callfunction(char **statement) {
   int index = 0, arguments = 0, argnum[10];
   for (int i = 6; !CMATCH(i, ')'); ++i) {
     if (!CMATCH(i, ',')) argnum[arguments++] = i;
-    if (i > 45) prerror("missing \")\" at end of function call\n");
+    if (i > 195) prerror("missing \")\" at end of function call\n");
   }
   if (!arguments) fprintf(stderr, "(%d) Warning: function call with no arguments\n", line);
   while (arguments) {
@@ -993,7 +1240,10 @@ BOOL islabelelse(char **statement) {
   return findlabel(statement, i);
 }
 
+#define SCMATCH(STR) (MATCH(statementcache, STR))
+
 BOOL findlabel(char **statement, int i) {
+  char statementcache[100];
   // 0 if label, 1 if not
   if (statement[i][0] >= '0' && statement[i][0] <= ':') return 0;
   if (CMATCH(i + 1, ':')) return !SMATCH(i + 2, "rem");
@@ -1001,31 +1251,59 @@ BOOL findlabel(char **statement, int i) {
   if (SMATCH(i + 1, "else")) return 0;
   //if (SMATCH(i + 1, "bank")) return 0;
   // uncomment to allow then label bankx (needs work)
-
+  if (!CMATCH(i + 1, '\0')) return 1;
   // only possibilities left are: drawscreen, player0:, player1:, asm, next, return, maybe others added later?
-  // Otherwise... I really hope we've got a label !!!!
 
-  return (
-       statement[i + 1][0]
-    || SMATCH(i, "drawscreen")
-    || SMATCH(i, "lives:")
-    || SMATCH(i, "player0color:")
-    || SMATCH(i, "player1color:")
-    || SMATCH(i, "player0:")
-    || SMATCH(i, "player1:")
-    || SMATCH(i, "player2:")
-    || SMATCH(i, "player3:")
-    || SMATCH(i, "player4:")
-    || SMATCH(i, "player5:")
-    || SMATCH(i, "playfield:")
-    || SMATCH(i, "pfcolors:")
-    || SMATCH(i, "pfheights:")
-    || SMATCH(i, "asm")
-    || SMATCH(i, "rem")
-    || SMATCH(i, "next")
-    || SMATCH(i, "reboot")
-    || SMATCH(i, "return")
-  );
+  strcpy(statementcache, statement[i]);
+  removeCR(statementcache);
+
+  return
+         SCMATCH("drawscreen")
+      || SCMATCH("lives:")
+      || SCMATCH("player0color:")
+      || SCMATCH("player1color:") // [REVENG] player1color: was missing
+      || SCMATCH("player2color:")
+      || SCMATCH("player3color:")
+      || SCMATCH("player4color:")
+      || SCMATCH("player5color:")
+      || SCMATCH("player6color:")
+      || SCMATCH("player7color:")
+      || SCMATCH("player8color:")
+      || SCMATCH("player9color:")
+      || SCMATCH("player0:")
+      || SCMATCH("player1:")
+      || SCMATCH("player2:")
+      || SCMATCH("player3:")
+      || SCMATCH("player4:")
+      || SCMATCH("player5:")
+      || SCMATCH("player6:")
+      || SCMATCH("player7:")
+      || SCMATCH("player8:")
+      || SCMATCH("player9:")
+      || SCMATCH("player1-")
+      || SCMATCH("player2-")
+      || SCMATCH("player3-")
+      || SCMATCH("player4-")
+      || SCMATCH("player5-")
+      || SCMATCH("player6-")
+      || SCMATCH("player7-")
+      || SCMATCH("player8-")
+      || SCMATCH("playfield:")
+      || SCMATCH("pfcolors:")
+      || SCMATCH("scorecolors:")
+      || SCMATCH("pfheights:")
+      || !strncmp(statementcache, "asm\0", 4)
+      || !strncmp(statementcache, "pop\0", 4)
+      || !strncmp(statementcache, "stack\0", 6)
+      || !strncmp(statementcache, "push\0", 5)
+      || !strncmp(statementcache, "pull\0", 5)
+      || !strncmp(statementcache, "rem\0", 4)
+      || !strncmp(statementcache, "next\0", 5)
+      || !strncmp(statementcache, "reboot\0", 7)
+      || !strncmp(statementcache, "return\0", 7)
+      || SCMATCH("callmacro")
+      || CMATCH(i + 1, '=');       // it's a variable assignment
+                                   // Otherwise I really hope we've got a label !!!!
 }
 
 void sread(char **statement) {
@@ -1063,7 +1341,7 @@ void sdata(char **statement) {
     remove_trailing_commas(data);
     for (i = 0; i < COUNT(data); ++i) {
       if ((int)data[i] > 32) break;
-      if ((int)data[i] < 14) i = COUNT(data);
+      if ((int)data[i] < 14 && (int)data[i] != 9) i = COUNT(data);
     }
     if (i < COUNT(data)) ap(".byte %s", data);
   }
@@ -1075,9 +1353,12 @@ void data(char **statement) {
   char data[200];
   char **data_length;
   char **deallocdata_length;
-  int i;
-  data_length = (char**)malloc(sizeof(char*) * 50);
-  for (i = 0; i < 50; ++i) data_length[i] = (char*)malloc(sizeof(char) * 50);
+  int i, j;
+  data_length = (char**)malloc(sizeof(char*) * 200);
+  for (i = 0; i < 200; ++i) {
+    data_length[i] = (char*)malloc(sizeof(char) * 200);
+    for (j = 0; j < 200; ++j) data_length[i][j] = '\0';
+  }
   deallocdata_length = data_length;
   removeCR(statement[2]);
 
@@ -1095,7 +1376,7 @@ void data(char **statement) {
     remove_trailing_commas(data);
     for (i = 0; i < COUNT(data); ++i) {
       if ((int)data[i] > 32) break;
-      if ((int)data[i] < 14) i = COUNT(data);
+      if ((int)data[i] < 14 && (int)data[i] != 9) i = COUNT(data);
     }
     if (i < COUNT(data)) ap(".byte %s", data);
   }
@@ -1126,6 +1407,13 @@ void compressdata(char **statement, int num1, int num2) {
 void ongoto(char **statement) {
   // warning!!! bankswitching not yet supported
   int k, i = 4;
+
+  if (SMATCH(3, "gosub")) {
+    ap("LDA #>(ongosub%d-1)", ongosub);
+    ap("PHA");
+    ap("LDA #<(ongosub%d-1)", ongosub);
+    ap("PHA");
+  }
   if (strcmp(statement[2], Areg)) ap("LDX %s", statement[2]);
   //ap("ASL");
   //ap("TAX");
@@ -1154,6 +1442,7 @@ void ongoto(char **statement) {
       }
     ap(".byte <(.%s-1)", statement[i++]);
   }
+  if (SMATCH(3, "gosub")) printf("ongosub%d\n", ongosub++);
 }
 
 void dofor(char **statement) {
@@ -1181,7 +1470,7 @@ void dofor(char **statement) {
 void next(char **statement) {
   BOOL immed = false, immedend = false;
   int failsafe = 0;
-  char failsafelabel[60];
+  char failsafelabel[200];
 
   invalidate_Areg();
 
@@ -1242,12 +1531,11 @@ void next(char **statement) {
     }
     ap("STA %s", forvar[numfors]);
 
-    printf("\tCMP %s", immedtok(forend[numfors]));
     // add 1 to immediate compare for increasing loops
     immedend = isimmed(forend[numfors]);
     if (immedend && !(atoi(forstep[numfors]) & 128))
       strcat(forend[numfors], "+1");
-    printf("%s\n", forend[numfors]);
+    ap("CMP %s%s", immedtok(forend[numfors]), forend[numfors]); // [SRL] isimmed still works with "+1"
     // if step number is 1 to 127 then add 1 and use bcc, otherwise bcs
     // if step is a variable, we'll need to check for every loop iteration
     //
@@ -1294,7 +1582,7 @@ void dim(char **statement) {
   }
   i = 2;
   redefined_variables[numredefvars][0] = '\0';
-  while (!CMATCH(i, '\0')) {
+  while (!CMATCH(i, '\0') && !CMATCH(i, ':')) {
     strcat(redefined_variables[numredefvars], statement[i++]);
     strcat(redefined_variables[numredefvars], " ");
   }
@@ -1305,7 +1593,7 @@ void doconst(char **statement) {
   // basically the same as dim, except we keep a queue of variable names that are constant
   int i = 2;
   redefined_variables[numredefvars][0] = '\0';
-  while (!CMATCH(i, '\0')) {
+  while (!CMATCH(i, '\0') && !CMATCH(i, ':')) {
     strcat(redefined_variables[numredefvars], statement[i++]);
     strcat(redefined_variables[numredefvars], " ");
   }
@@ -1342,7 +1630,8 @@ void doreturn(char **statement) {
 
     if (index & 1) loadindex(&getindex0[0]);
 
-    char *opcode = bankedreturn ? "LDA" : "LDY";
+    // [REVENG]
+    char *opcode = bankedreturn || bs == 64 ? "LDA" : "LDY";
     ap("%s %s", opcode, indexpart(statement[2], index & 1));
   }
 
@@ -1356,10 +1645,20 @@ void doreturn(char **statement) {
   }
 
   if (bs) { // check if sub was called from the same bank
-    ap("TSX");
-    ap("LDA 2,x ; check return address");
-    ap("EOR #(>*) ; vs. current PCH");
-    ap("AND #$E0 ;  mask off all but top 3 bits");
+    if (bs == 64) {
+      // [REVENG]
+      // for 64kb carts, the onus is on the user to use "return otherbank" from bankswitch gosubs.
+      // if we're here, we assume that it was from a non-bankswitched gosub.
+      ap("RTS");
+      return;
+    }
+    else {
+      ap("TSX");
+      ap("LDA 2,x ; check return address");
+      ap("EOR #(>*) ; vs. current PCH");
+      ap("AND #$E0 ;  mask off all but top 3 bits");
+    }
+
     // if zero, then banks are the same
     if (!CMATCH(2, '\0') && !CMATCH(2, ' ')) {
       ap("BEQ *+6 ; if equal, do normal return");
@@ -1379,40 +1678,81 @@ void pfread(char **statement) {
   int i, j, index;
   invalidate_Areg();
 
+  if (bs == 28) { // [REVENG] DPC+ pfread code addition...
+    ap("LDA #<C_function");
+    ap("STA DF0LOW");
+    ap("LDA #(>C_function) & $0F");
+    ap("STA DF0HI");
+    ap("LDA #24");
+    ap("STA DF0WRITE");
+  }
+
   index = getindex(statement[3], &getindex0[0]) | getindex(statement[4], &getindex1[0]) << 1;
 
   if (index & 1) loadindex(&getindex0[0]);
 
   ap("LDA %s", indexpart(statement[4], index & 1));
 
+  if (bs == 28) ap("STA DF0WRITE");
+
   if (index & 2) loadindex(&getindex1[0]);
 
   ap("LDY %s", indexpart(statement[6], index & 2));
 
-  jsr("pfread");
+  if (bs == 28) {
+    ap("STY DF0WRITE");
+    ap("LDA #255\n\tSTA CALLFUNCTION");
+    ap("LDA DF0DATA");
+  }
+  else
+    jsr("pfread");
 }
 
 void pfpixel(char **statement) {
   char getindex0[STATEMENT_PART_SIZE], getindex1[STATEMENT_PART_SIZE];
+  int on_off_flip = 0;
   int i, j, index;
   if (multisprite == 1) { prerror("Error: pfpixel not supported in multisprite kernel\n"); exit(1); }
   invalidate_Areg();
 
   index = getindex(statement[2], &getindex0[0]) | getindex(statement[3], &getindex1[0]) << 1;
-  if (index & 1) loadindex(&getindex0[0]);
 
-  ap("LDA %s", indexpart(statement[2], index & 1));
+  if (bs == 28) { // DPC+
+    ap("LDA #<C_function");
+    ap("STA DF0LOW");
+    ap("LDA #(>C_function) & $0F");
+    ap("STA DF0HI");
+  }
+
+  if (!strncmp(statement[4], "flip", 2))     // allow "fl"
+    on_off_flip = 2;
+  else if (!strncmp(statement[4], "off", 2)) // allow "of"
+    on_off_flip = 1;
+  ap("LDX #%d", on_off_flip | (bs == 28 ? 12 : 0));
+  if (bs == 28) {
+    ap("STX DF0WRITE");
+    ap("STX DF0WRITE");
+  }
 
   if (index & 2) loadindex(&getindex1[0]);
 
   ap("LDY %s", indexpart(statement[3], index & 2));
 
-  ap("LDX #%d", SMATCH(4, "flip") ? 2 : SMATCH(4, "off") ? 1 : 0);
-  jsr("pfpixel");
+  if (bs == 28) ap("STY DF0WRITE");
+
+  if (index & 1) loadindex(&getindex0[0]);
+  ap("LDA %s", indexpart(statement[2], index & 1));
+  if (bs == 28) {
+    ap("STA DF0WRITE");
+    ap("LDA #255");
+    ap("STA CALLFUNCTION");
+  }
+  else jsr("pfpixel");
 }
 
 void pfhline(char **statement) {
   char getindex0[STATEMENT_PART_SIZE], getindex1[STATEMENT_PART_SIZE], getindex2[STATEMENT_PART_SIZE];
+  int on_off_flip = 0;
   int i, j, index = 0;
   if (multisprite == 1) {
     prerror("Error: pfhline not supported in multisprite kernel\n");
@@ -1421,73 +1761,162 @@ void pfhline(char **statement) {
 
   invalidate_Areg();
 
+  if (bs == 28) { // DPC+
+    ap("LDA #<C_function");
+    ap("STA DF0LOW");
+    ap("LDA #(>C_function) & $0F");
+    ap("STA DF0HI");
+  }
+
   index |= getindex(statement[2], &getindex0[0]);
   index |= getindex(statement[3], &getindex1[0]) << 1;
   index |= getindex(statement[4], &getindex2[0]) << 2;
 
+  if (!strncmp(statement[5], "flip", 2))     // allow "fl"
+    on_off_flip = 2;
+  else if (!strncmp(statement[5], "off", 2)) // allow "of"
+    on_off_flip = 1;
+  ap("LDX #%d", on_off_flip | (bs == 28 ? 8 : 0));
+  if (bs == 28) ap("STX DF0WRITE");
+
   if (index & 4) loadindex(&getindex2[0]);
   ap("LDA %s", indexpart(statement[4], index & 4));
-  ap("STA temp3");
-
-  if (index & 1) loadindex(&getindex0[0]);
-  ap("LDA %s", indexpart(statement[2], index & 1));
+  ap("STA %s", bs == 28 ? "DF0WRITE" : "temp3");
 
   if (index & 2) loadindex(&getindex1[0]);
   ap("LDY %s", indexpart(statement[3], index & 2));
+  if (bs == 28) ap("STY DF0WRITE");
 
-  ap("LDX #%d", SMATCH(5, "flip") ? 2 : SMATCH(5, "off") ? 1 : 0);
-
-  jsr("pfhline");
+  if (index & 1) loadindex(&getindex0[0]);
+  ap("LDA %s", indexpart(statement[2], index & 1));
+  if (bs == 28) {
+    ap("STA DF0WRITE");
+    ap("LDA #255");
+    ap("STA CALLFUNCTION");
+  }
+  else jsr("pfhline");
 }
 
 void pfvline(char **statement) {
   char getindex0[STATEMENT_PART_SIZE], getindex1[STATEMENT_PART_SIZE], getindex2[STATEMENT_PART_SIZE];
-  int i, j, index = 0;
+  int i, j, index;
+  int on_off_flip = 0;
   if (multisprite == 1) { prerror("Error: pfvline not supported in multisprite kernel\n"); exit(1); }
 
   invalidate_Areg();
 
-  index |= getindex(statement[2], &getindex0[0]);
-  index |= getindex(statement[3], &getindex1[0]) << 1;
-  index |= getindex(statement[4], &getindex2[0]) << 2;
+  if (bs == 28) { // DPC+
+    ap("LDA #<C_function");
+    ap("STA DF0LOW");
+    ap("LDA #(>C_function) & $0F");
+    ap("STA DF0HI");
+  }
+
+  index = getindex(statement[2], &getindex0[0])
+        | getindex(statement[3], &getindex1[0]) << 1
+        | getindex(statement[4], &getindex2[0]) << 2;
+
+  if (!strncmp(statement[5], "flip", 2))     // allow "fl"
+    on_off_flip = 2;
+  else if (!strncmp(statement[5], "off", 2)) // allow "of"
+    on_off_flip = 1;
+
+  ap("LDX #%d", on_off_flip | (bs == 28 ? 4 : 0));
+  if (bs == 28) ap("STX DF0WRITE");
 
   if (index & 4) loadindex(&getindex2[0]);
   ap("LDA %s", indexpart(statement[4], index & 4));
-  ap("STA temp3");
-
-  if (index & 1) loadindex(&getindex0[0]);
-  ap("LDA %s", indexpart(statement[2], index & 1));
+  ap("STA %s", bs == 28 ? "DF0WRITE" : "temp3");
 
   if (index & 2) loadindex(&getindex1[0]);
   ap("LDY %s", indexpart(statement[3], index & 2));
+  if (bs == 28) ap("STY DF0WRITE");
 
-  ap("LDX #%d", SMATCH(5, "flip") ? 2 : SMATCH(5, "off") ? 1 : 0);
-
-  jsr("pfvline");
+  if (index & 1) loadindex(&getindex0[0]);
+  ap("LDA %s", indexpart(statement[2], index & 1));
+  if (bs == 28) {
+    ap("STA DF0WRITE");
+    ap("LDA #255");
+    ap("STA CALLFUNCTION");
+  }
+  else jsr("pfvline");
 }
 
 void pfscroll(char **statement) {
-  if (multisprite == 1) {prerror("Error: pfscroll support not yet implemented in multisprite kernel\n"); exit(1); }
   invalidate_Areg();
+  if (bs == 28) {
+    //DPC+ version of function uses the syntax: pfscroll #LINES [start queue#] [end queue#]
+    if (SMATCH(2, "up") || SMATCH(2, "down") || SMATCH(2, "right") || SMATCH(2, "left")) {
+      fprintf(stderr, "(%d) pfscroll for DPC+ doesn't use up/down/left/right. try a value or variable instead.\n", line);
+      exit(1);
+    }
+    ap("LDA #<C_function");
+    ap("STA DF0LOW");
+    ap("LDA #(>C_function) & $0F");
+    ap("STA DF0HI");
 
-  printf("\tLDA #");
+    ap("LDA #32");
+    ap("STA DF0WRITE");
 
-       // With this code, "pfscroll lexluthor" will scroll left
-       if (!strncmp(statement[2], "left", 2))     printf("0\n"); // Allow "le"
-  else if (!strncmp(statement[2], "right", 2))    printf("1\n"); // Allow "ri"
-  else if (SMATCH(2, "upup"))                     printf("6\n");
-  else if (!strncmp(statement[2], "downdown", 6)) printf("8\n"); // Allow "downdo"
-  else if (SMATCH(2, "up"))                       printf("2\n");
-  else if (!strncmp(statement[2], "down", 2))     printf("4\n"); // Allow "do"
+    if (statement[2][0] >= '0' && statement[2][0] <= '9')
+      ap("LDA #%s", statement[2]);
+    else
+      ap("LDA %s", statement[2]);
+    ap("STA DF0WRITE");
+
+    if (statement[3][0] >= '0' && statement[3][0] <= '6') {
+      if (statement[4][0] >= '0' && statement[4][0] <= '6') {
+        ap("LDA #%d", statement[3][0] - '0');
+        ap("STA DF0WRITE");
+        ap("LDA #%d", statement[4][0] - '0' + 1);
+        ap("STA DF0WRITE");
+      }
+      else {
+        fprintf(stderr, "(%d) initial queue provided for DPC+ pfscroll, but invalid end queue was provided.\n",line);
+        exit(1);
+      }
+    }
+    else {
+      //the default is to scroll all playfield columns, without color scrolling
+      ap("LDA #0");
+      ap("STA DF0WRITE");
+      ap("LDA #4");
+      ap("STA DF0WRITE");
+    }
+
+    ap("LDA #255");
+    ap("STA CALLFUNCTION");
+    return;
+  }
+  if (multisprite == 1) {
+    printf("\tLDA #");
+    if (SMATCH(2, "up"))
+      printf("0\n");
+    else if (!strncmp(statement[2], "down", 2)) // allow "do"
+      printf("1\n");
+    else {
+      fprintf(stderr, "(%d) pfscroll direction unknown in multisprite kernel\n", line);
+      exit(1);
+    }
+  }
   else {
-    fprintf(stderr, "(%d) pfscroll direction unknown\n", line);
-    exit(1);
+    printf("\tLDA #");
+         if (!strncmp(statement[2], "left", 2)) printf("0\n");     // allow "le"
+    else if (!strncmp(statement[2], "right", 2)) printf("1\n");    // allow "ri"
+    else if (SMATCH(2, "upup")) printf("6\n");
+    else if (!strncmp(statement[2], "downdown", 6)) printf("8\n"); // allow "downdo"
+    else if (SMATCH(2, "up")) printf("2\n");
+    else if (!strncmp(statement[2], "down", 2)) printf("4\n");     // allow "do"
+    else {
+      fprintf(stderr, "(%d) pfscroll direction unknown\n", line);
+      exit(1);
+    }
   }
   jsr("pfscroll");
 }
 
 void doasm() {
-  char data[100];
+  char data[200];
   while (1) {
     if ((!fgets(data, sizeof(data), stdin) || (data[0] <= '9' && data[0] >= '0')) && data[0] != 'e') {
       prerror("Error: Missing \"end\" keyword at end of inline asm\n");
@@ -1499,44 +1928,107 @@ void doasm() {
   }
 }
 
+void doend() {
+  if (extraactive) {
+    printf(" ENDM\n");
+    extraactive = false;
+  }
+  else if (macroactive) {
+    printf(" ENDM\n");
+    macroactive = false;
+  }
+  else
+    prerror("extraneous end statement found");
+}
+
 void player(char **statement) {
-  int height = 0; //calculating sprite height
+  int height = 0, i = 0; //calculating sprite height
   int doingcolor = 0; //doing player colors?
-  char label[50], data[100];
-  // char bytes[1000];
-  // char byte[100];
+  char label[200];
+  char j;
+  char data[200];
   char pl = statement[1][6];
-  if (statement[1][7] == 'c') doingcolor = 1;
-  // bytes[0] = '\0';
   int heightrecord;
-  if (!doingcolor) sprintf(label, "player%s_%c\n", statement[0], pl);
-  else sprintf(label, "playercolor%s_%c\n", statement[0], pl);
+  if (statement[1][7] == 'c') doingcolor = 1;
+  if (statement[1][7] == '-' && statement[1][9] == 'c') doingcolor = 1;
+  if (!doingcolor)
+    sprintf(label, "player%s_%c\n", statement[0], pl);
+  else
+    sprintf(label, "playercolor%s_%c\n", statement[0], pl);
+  removeCR(label);
+  if (multisprite == 2 && pl != '0') {
+    ap("LDA #<(playerpointers+%d)", (pl - '1') * 2 + 18 * doingcolor);
+    ap("STA DF0LOW");
+    ap("LDA #(>(playerpointers+%d)) & $0F", (pl - '1') * 2 + 18 * doingcolor);
+    ap("STA DF0HI");
+  }
+  ap("LDX #<%s", label);
 
-  ap("LDA #<%s", label);
-  if (!doingcolor) ap("STA player%cpointerlo", pl);
-  else ap("STA player%ccolor", pl);
+  if (multisprite == 2 && pl != '0')
+    ap("STX DF0WRITE");
+  else if (!doingcolor)
+    ap("STX player%cpointerlo", pl);
+  else
+    ap("STX player%ccolor", pl);
 
-  ap("LDA #>%s", label);
-  if (!doingcolor) ap("STA player%cpointerhi", pl);
-  else ap("STA player%ccolor+1", pl);
+  if (multisprite == 2)
+    ap("LDA #((>%s) & $0f) | (((>%s) / 2) & $70)", label, label); // DPC+
+  else
+    ap("LDA #>%s", label);
+  if (multisprite == 2 && pl != '0')
+    ap("STA DF0WRITE");
+  else if (!doingcolor)
+    ap("STA player%cpointerhi", pl);
+  else
+    ap("STA player%ccolor+1", pl);
+
+  if (statement[1][7] == '-' && multisprite == 2 && pl != '0') { // multiple players
+    for (j = statement[1][6] + 1; j <= statement[1][8]; j++) {
+      ap("STX DF0WRITE");
+      ap("STA DF0WRITE"); // creates multiple "copies" of single sprite
+    }
+  }
 
   //ap("JMP .%sjump%c", statement[0], pl);
 
   // insert DASM stuff to prevent page-wrapping of player data
   // stick this in a data file instead of displaying
 
-  heightrecord = sprite_index++;
-  sprite_index += 2;
-  // record index for creation of the line below
-
-  if (multisprite == 1) {
-    sprintf(sprite_data[sprite_index++], " if (<*) < 100\n");
-    sprintf(sprite_data[sprite_index++], "   repeat (100-<*)\n" a(".byte 0"));
-    sprintf(sprite_data[sprite_index++], "   repend\n endif\n");
+  if (multisprite != 2) { // DPC+ has no pages to wrap
+    heightrecord = sprite_index++;
+    sprite_index += 2;
+    // record index for creation of the line below
   }
+  if (multisprite == 1) {
+    sprintf(sprite_data[sprite_index++], " if (<*) < 90\n"); // is 90 enough? could this be the cause of page wrapping issues at the bottom of the screen?
+    // This is potentially wasteful, therefore the user now has an option to use this space for data or code
+    // (Not an ideal way, but a way nonetheless)
+    if (optimization & _BV(OPTI_SIZE)) {
+      sprintf(sprite_data[sprite_index++], "extralabel%d\n", extralabel);
+      sprintf(sprite_data[sprite_index++], " ifconst extra\n");
+      for (i = 4; i >= 0; i--) {
+        if (i == 4)
+          sprintf(sprite_data[sprite_index++], " if (extra > %d)\n", i);
+        else
+          sprintf(sprite_data[sprite_index++], " else\n if (extra > %d)\n", i);
+        sprintf(sprite_data[sprite_index++], " if (extra > %d)\n", i);
+        sprintf(sprite_data[sprite_index++], "extra set extra-1\n");
+        sprintf(sprite_data[sprite_index++], " extra%d\n", i);
+      }
+      sprintf(sprite_data[sprite_index++], " endif\n endif\n endif\n endif\n endif\n endif\n");
+
+      sprintf(sprite_data[sprite_index++], " echo [90-(<*)]d,\"bytes found in extra%d", extralabel);
+      sprintf(sprite_data[sprite_index++], " (\",[(*-extralabel%d)]d,\"used)\"\n", extralabel++);
+      sprintf(sprite_data[sprite_index++], " if (<*) < 90\n");  // do it again
+    }
+    sprintf(sprite_data[sprite_index++], "   repeat (90-<*)\n" a(".byte 0"));
+    sprintf(sprite_data[sprite_index++], "   repend\n endif\n");
+    if (optimization & _BV(OPTI_SIZE)) sprintf(sprite_data[sprite_index++], " endif\n");
+  } // potential bug: should this go after the below page wrapping stuff to prevent possible issues?
 
   sprintf(sprite_data[sprite_index++], "%s\n", label);
-  sprintf(sprite_data[sprite_index++], a(".byte 0"));
+  if (multisprite == 1 && pl == '0')
+    sprintf(sprite_data[sprite_index++], a(".byte 0"));
 
   while (1) {
     if ((!fgets(data, sizeof(data), stdin) || (data[0] <= '9' && data[0] >= '0')) && data[0] != 'e') {
@@ -1547,27 +2039,39 @@ void player(char **statement) {
     if (MATCH(data, "end")) break;
     height++;
     sprintf(sprite_data[sprite_index++], "\t.byte %s", data);
-    //strcat(bytes, byte);
   }
 
-  // record height
-  sprintf(sprite_data[heightrecord], " if (<*) > (<(*+%d))\n", height + 1);
-  sprintf(sprite_data[heightrecord + 1], "  repeat ($100-<*)\n" a(".byte 0"));
-  sprintf(sprite_data[heightrecord + 2], "  repend\n endif\n");
+  if (multisprite == 1 && pl == '0') height++;
+
+  // record height and add page-wrap prevention
+  if (multisprite != 2) { // DPC+ has no pages to wrap
+    sprintf(sprite_data[heightrecord], " if (<*) > (<(*+%d))\n", height - 1); //+1);
+    sprintf(sprite_data[heightrecord + 1], "   repeat ($100-<*)\n" a(".byte 0"));
+    sprintf(sprite_data[heightrecord + 2], "   repend\n endif\n");
+  }
+
+  if (multisprite == 1 && pl == '0') height--;
 
   //printf(".%sjump%c\n", statement[0], pl);
   if (multisprite == 1)
-    ap("LDA #%d", height + 2);
-  else if (!doingcolor)
+    ap("LDA #%d", height + 1); //2);
+  else if (multisprite == 2 && !doingcolor)
     ap("LDA #%d", height);
+  else if (!doingcolor)
+    ap("LDA #%d", height - 1); // added -1);
 
-  if (!doingcolor)
-    ap("STA player%cheight", pl);
+  if (!doingcolor) ap("STA player%cheight", pl);
+
+  if (statement[1][7] == '-' && multisprite == 2 && pl != '0') { // multiple players
+    for (j = statement[1][6] + 1; j <= statement[1][8]; j++) {
+      if (!doingcolor) ap("STA player%cheight", j);
+    }
+  }
 }
 
 void lives(char **statement) {
   int height = 8, i = 0; //height is always 8
-  char label[50], data[100];
+  char label[200], data[200];
   if (!lifekernel) {
     lifekernel = true;
     //strcpy(redefined_variables[numredefvars++], "lifekernel = 1");
@@ -1601,8 +2105,81 @@ void lives(char **statement) {
   }
 }
 
+#define COLL(S) MATCH(statement, "collision(" S ")")
+
+int check_colls(char *statement) {
+  char *reg;
+  int bit = 0;
+  if (COLL("missile0,player1"))
+    reg = "M0P", bit = 7;
+  else if (COLL("missile0,player0"))
+    reg = "M0P", bit = 6;
+  else if (COLL("missile1,player0"))
+    reg = "M1P", bit = 7;
+  else if (COLL("missile1,player1"))
+    reg = "M1P", bit = 6;
+  else if (COLL("player0,playfield"))
+    reg = "P0FB", bit = 7;
+  else if (COLL("player0,ball"))
+    reg = "P0FB", bit = 6;
+  else if (COLL("player1,playfield"))
+    reg = "P1FB", bit = 7;
+  else if (COLL("player1,ball"))
+    reg = "P1FB", bit = 6;
+  else if (COLL("missile0,playfield"))
+    reg = "M0FB", bit = 7;
+  else if (COLL("missile0,ball"))
+    reg = "M0FB", bit = 6;
+  else if (COLL("missile1,playfield"))
+    reg = "M1FB", bit = 7;
+  else if (COLL("missile1,ball"))
+    reg = "M1FB", bit = 6;
+  else if (COLL("ball,playfield"))
+    reg = "BLPF", bit = 7;
+  else if (COLL("player0,player1"))
+    reg = "PPMM", bit = 7;
+  else if (COLL("missile0,missile1"))
+    reg = "PPMM", bit = 6;
+
+  // now repeat everything in reverse...
+
+  else if (COLL("player1,missile0"))
+    reg = "M0P", bit = 7;
+  else if (COLL("player0,missile0"))
+    reg = "M0P", bit = 6;
+  else if (COLL("player0,missile1"))
+    reg = "M1P", bit = 7;
+  else if (COLL("player1,missile1"))
+    reg = "M1P", bit = 6;
+  else if (COLL("playfield,player0"))
+    reg = "P0FB", bit = 7;
+  else if (COLL("ball,player0"))
+    reg = "P0FB", bit = 6;
+  else if (COLL("playfield,player1"))
+    reg = "P1FB", bit = 7;
+  else if (COLL("ball,player1"))
+    reg = "P1FB", bit = 6;
+  else if (COLL("playfield,missile0"))
+    reg = "M0FB", bit = 7;
+  else if (COLL("ball,missile0"))
+    reg = "M0FB", bit = 6;
+  else if (COLL("playfield,missile1"))
+    reg = "M1FB", bit = 7;
+  else if (COLL("ball,missile1"))
+    reg = "M1FB", bit = 6;
+  else if (COLL("playfield,ball"))
+    reg = "BLPF", bit = 7;
+  else if (COLL("player1,player0"))
+    reg = "PPMM", bit = 7;
+  else if (COLL("missile1,missile0"))
+    reg = "PPMM", bit = 6;
+  if (bit) printf("\tCX%s", reg);
+  return bit;
+}
+
 void doif(char **statement) {
-  int index = 0, not = 0, i, j, k, bit = 0, Aregmatch = 0;
+  int index = 0, not = 0, i, j, k, bit = 0, Aregmatch = 0,
+      situation = 0, complex_boolean = 0, h, push1 = 0, push2 = 0;
   char getindex0[STATEMENT_PART_SIZE], getindex1[STATEMENT_PART_SIZE],
        Aregcopy[STATEMENT_PART_SIZE],
        **cstatement, // conditional statement
@@ -1610,25 +2187,69 @@ void doif(char **statement) {
 
   strcpy(Aregcopy, "index-invalid");
 
-  deallocstatement = cstatement = (char**)malloc(sizeof(char*) * 50);
-  for (k = 0; k < 50; ++k) cstatement[k] = (char*)malloc(sizeof(char) * 50);
-  for (k = 0; k < 50; ++k) for (j = 0; j < 50; ++j) cstatement[j][k] = '\0';
-  if (CMATCH(2, '!')) {
+  cstatement = (char**)malloc(sizeof(char*) * STATEMENT_MAX_PARTS);
+  for (k = 0; k < STATEMENT_MAX_PARTS; ++k) cstatement[k] = (char*)malloc(sizeof(char) * STATEMENT_PART_SIZE);
+  deallocstatement = cstatement;
+  for (k = 0; k < STATEMENT_MAX_PARTS; ++k) for (j = 0; j < STATEMENT_PART_SIZE; ++j) cstatement[j][k] = '\0';
+  if (CMATCH(2, '!') && statement[2][1]) {
     not = 1;
     for (i = 0; i < STATEMENT_PART_SIZE - 1; ++i)
       statement[2][i] = statement[2][i + 1];
   }
+  else if (!strncmp(statement[2], "!\0", 2)) {
+    not = 1;
+    compressdata(statement, 2, 1);
+  }
+
+  if (CMATCH(2, '(')) {
+    j = 0; k = 0;
+    for (i = 2; i < STATEMENT_MAX_PARTS - 1; ++i) {
+      if (CMATCH(i, '(')) j++;
+      if (CMATCH(i, ')')) j--;
+      if (CMATCH(i, '<') || CMATCH(i, '>') || CMATCH(i, '=')) break;
+      if (CMATCH(i, '&') && statement[i][1] == '\0') k = j;
+      if (SMATCH(i, "then")) {
+        //prerror("Complex boolean not yet supported\n");exit(1);
+        complex_boolean = 1;
+        break;
+      }
+    }
+    if (i == STATEMENT_PART_SIZE - 1 && k) j = k;
+    if (j) {
+      compressdata(statement, 2, 1); //remove first parenthesis
+      for (i = 2; i < 199; ++i)
+        if (SMATCH(i, "then") || SMATCH(i, "&&") || SMATCH(i, "||")) break;
+      if (i != 199) {
+        if (!CMATCH(i - 1, ')')) {
+          prerror("Unbalanced parentheses in if-then\n");
+          exit(1);
+        }
+        compressdata(statement,i-1,1);
+      }
+    }
+  }
+
   if (SMATCH(2, "joy") || SMATCH(2, "switch")) {
-    switchjoy(statement[2]);
+    i = switchjoy(statement[2]);
     if (!islabel(statement)) {
-      not ? bne(statement[4]) : beq(statement[4]);
-      // printf("\tB%s ", not ? "NE" : "EQ");
-      // printf(".%s\n", statement[4]);
+      if (!i)
+        not ? bne(statement[4]) : beq(statement[4]);
+      else if (i == 1) // bvc/bvs
+        not ? bvs(statement[4]) : bvc(statement[4]);
+      else if (i == 2) // bpl/bmi
+        not ? bmi(statement[4]) : bpl(statement[4]);
       freemem(deallocstatement);
       return;
     }
     else { // then statement
-      ap("B%s .skip%s", not ? "EQ" : "NE", statement[0]);
+      if (!i)
+        printf(not ? "\tBEQ " : "\tBNE ");
+      else if (i == 1)
+        printf(not ? "\tBVC " : "\tBVS ");
+      else if (i == 2)
+        printf(not ? "\tBPL " : "\tBMI ");
+
+      printf(".skip%s\n", statement[0]);
 
       // separate statement
       for (i = 3; i < STATEMENT_MAX_PARTS; ++i)
@@ -1668,58 +2289,40 @@ void doif(char **statement) {
   }
 
   if (SMATCH(2, "collision(")) {
-
-    unsigned char unknown_coll = 0;
-    char *bitstr = NULL;
-    char colbits = 0;
-    unsigned char nxt = 0;
-
-         if (MATCH(&statement[2][10], "missile0,"))  { nxt = 9;  colbits |= _BV(COLL_M0); }
-    else if (MATCH(&statement[2][10], "missile1,"))  { nxt = 9;  colbits |= _BV(COLL_M1); }
-    else if (MATCH(&statement[2][10], "player0,"))   { nxt = 8;  colbits |= _BV(COLL_P0); }
-    else if (MATCH(&statement[2][10], "player1,"))   { nxt = 8;  colbits |= _BV(COLL_P1); }
-    else if (MATCH(&statement[2][10], "playfield,")) { nxt = 10; colbits |= _BV(COLL_PF); }
-    else if (MATCH(&statement[2][10], "ball,"))      { nxt = 5;  colbits |= _BV(COLL_BALL); }
-
-    if (colbits) {
-           if (MATCH(&statement[2][10 + nxt], "missile0)"))  { colbits |= _BV(COLL_M0); }
-      else if (MATCH(&statement[2][10 + nxt], "missile1)"))  { colbits |= _BV(COLL_M1); }
-      else if (MATCH(&statement[2][10 + nxt], "player0)"))   { colbits |= _BV(COLL_P0); }
-      else if (MATCH(&statement[2][10 + nxt], "player1)"))   { colbits |= _BV(COLL_P1); }
-      else if (MATCH(&statement[2][10 + nxt], "playfield)")) { colbits |= _BV(COLL_PF); }
-      else if (MATCH(&statement[2][10 + nxt], "ball)"))      { colbits |= _BV(COLL_BALL); }
+    if (SMATCH(2, "collision(player")
+      && (MATCH(statement[2] + 17, ",player") || MATCH(statement[2] + 17, ",_player"))
+      && bs == 28
+    ) {
+      // DPC+ custom collision
+      if (statement[2][16] + statement[2][24] != '0' + '1') {
+        ap("LDA #<C_function");
+        ap("STA DF0LOW");
+        ap("LDA #(>C_function) & $0F");
+        ap("STA DF0HI");
+        ap("LDA #20");
+        ap("STA DF0WRITE");
+        ap("LDA #%c", statement[2][16]);
+        ap("STA DF0WRITE");
+        if(statement[2][24]=='r')
+          ap("LDA #%c", statement[2][25]);
+        else
+          ap("LDA #%c", statement[2][24]);
+        ap("STA DF0WRITE");
+        ap("LDA #255");
+        ap("STA CALLFUNCTION");
+        ap("BIT DF0DATA");
+        bit = 7;
+      }
     }
 
-    switch (colbits) {
-      case _BV(COLL_M0)|_BV(COLL_M1):   bitstr = "PPMM";  bit = 6; break;
-      case _BV(COLL_M0)|_BV(COLL_P0):   bitstr = "M0P";   bit = 6; break;
-      case _BV(COLL_M0)|_BV(COLL_P1):   bitstr = "M0P";   bit = 7; break;
-      case _BV(COLL_M0)|_BV(COLL_BALL): bitstr = "M0FB";  bit = 6; break;
-      case _BV(COLL_M0)|_BV(COLL_PF):   bitstr = "M0FB";  bit = 7; break;
-
-      case _BV(COLL_M1)|_BV(COLL_P0):   bitstr = "M1P";   bit = 7; break;
-      case _BV(COLL_M1)|_BV(COLL_P1):   bitstr = "M1P";   bit = 6; break;
-      case _BV(COLL_M1)|_BV(COLL_BALL): bitstr = "M1FB";  bit = 6; break;
-      case _BV(COLL_M1)|_BV(COLL_PF):   bitstr = "M1FB";  bit = 7; break;
-
-      case _BV(COLL_P0)|_BV(COLL_P1):   bitstr = "PPMM";  bit = 7; break;
-      case _BV(COLL_P0)|_BV(COLL_BALL): bitstr = "P0FB";  bit = 6; break;
-      case _BV(COLL_P0)|_BV(COLL_PF):   bitstr = "P0FB";  bit = 7; break;
-
-      case _BV(COLL_P1)|_BV(COLL_PF):   bitstr = "P1FB";  bit = 7; break;
-      case _BV(COLL_P1)|_BV(COLL_BALL): bitstr = "P1FB";  bit = 6; break;
-
-      case _BV(COLL_BALL)|_BV(COLL_PF): bitstr = "BLPF";  bit = 7; break;
-
-      default: unknown_coll = 1;
+    if (!bit) {
+      printf("\tBIT ");
+      bit = check_colls(statement[2]);
+      printf("\n");
     }
-
-    if (unknown_coll) {
+    if (!bit) { //error
       fprintf(stderr, "(%d) Error: Unknown collision type: %s\n", line, statement[2] + 9);
       exit(1);
-    }
-    else {
-      ap("BIT CX%s", bitstr);
     }
 
     if (!islabel(statement)) {
@@ -1749,7 +2352,7 @@ void doif(char **statement) {
   }
 
   // check for array, e.g. x{1} to get bit 1 of x
-  for (i = 0; i < STATEMENT_PART_SIZE; ++i) {
+  for (i = 3; i < STATEMENT_PART_SIZE; ++i) {
     if (!statement[2][i]) { i = STATEMENT_PART_SIZE; break; }
     if (statement[2][i] == '}') break;
   }
@@ -1828,6 +2431,265 @@ void doif(char **statement) {
   strcpy(Aregcopy, statement[2]);
   if (!strcmp(statement[2], Areg)) Aregmatch = 1; // do we already have the correct value in A?
 
+  for (i = 3; i < STATEMENT_MAX_PARTS; ++i)
+    if (SMATCH(i, "then") || SMATCH(i, "&&") || SMATCH(i, "||")) break;
+
+  j = 0;
+  for (k = 3; k < i; ++k) {
+    if (statement[k][0] == '&' && statement[k][1] == '\0') j = k;
+    if (statement[k][0] == '<' || statement[k][0] == '>' || statement[k][0] == '=') break;
+  }
+  if (k == i && j) k = j; // special case of & for efficient code
+
+  if (complex_boolean || (k == i && i > 4)) {
+    // complex boolean found
+    // assign value to contents, reissue statement as boolean
+    strcpy(cstatement[2], "Areg");
+    strcpy(cstatement[3], "=");
+    for (j = 2; j < i; ++j) strcpy(cstatement[j + 2], statement[j]);
+
+    dolet(cstatement);
+
+    if (!islabel(statement)) { // then linenumber
+      if (not) beq(statement[i + 1]); else bne(statement[i + 1]);
+    }
+    else { // then statement
+      // first, take negative of condition and branch around statement
+      j = i;
+      printf(not ? "\tBNE " : "\tBEQ ");
+    }
+    printf(".skip%s\n", statement[0]);
+
+    // separate statement
+    for (i = j; i < STATEMENT_MAX_PARTS; ++i)
+      for (k = 0; k < STATEMENT_PART_SIZE; ++k)
+        cstatement[i - j][k] = statement[i][k];
+
+    printf(".condpart%d\n", condpart++);
+    keywords(cstatement);
+    printf(".skip%s\n", statement[0]);
+
+    Aregmatch = 0;
+    freemem(deallocstatement);
+    return;
+  }
+  else if ((k < i && i - k != 2) || (k < i && k > 3)) {
+    printf("; complex condition detected\n");
+    // complex statements will be changed to assignments and reissued as assignments followed by a simple compare
+    // i=location of then
+    // k=location of conditional operator
+    // if is at 2
+    if (not) {
+      // handles =, <, <=, >, >=, <>
+      // & handled later
+      if (!strncmp(statement[k], "=\0", 2)) {
+        statement[3][0] = '<'; // force beq/bne below
+        statement[3][1] = '>';
+        statement[3][2] = '\0';
+      }
+      else if (SMATCH(k, "<>")) {
+        statement[3][0] = '='; // force beq/bne below
+        statement[3][1] = '\0';
+      }
+      else if (SMATCH(k, "<=")) {
+        statement[3][0] = '>'; // force beq/bne below
+        statement[3][1] = '\0';
+      }
+      else if (SMATCH(k, ">=")) {
+        statement[3][0] = '<'; // force beq/bne below
+        statement[3][1] = '\0';
+      }
+      else if (!strncmp(statement[k], "<\0", 2)) {
+        statement[3][0] = '>'; // force beq/bne below
+        statement[3][1] = '=';
+        statement[3][2] = '\0';
+      }
+      else if (!strncmp(statement[k], "<\0", 2)) {
+        statement[3][0] = '>'; // force beq/bne below
+        statement[3][1] = '=';
+        statement[3][2] = '\0';
+      }
+    }
+    if (k > 4) push1 = 1;// first statement is complex
+    if (i - k != 2) push2 = 1;// second statement is complex
+
+    // <, >=, &, = do not swap
+    // > or <= swap
+
+    if (push1 == 1 && push2 == 1 && strncmp(statement[k], ">\0", 2) && !SMATCH(k, "<=")) {
+      // Assign to Areg and push
+      strcpy(cstatement[2], "Areg");
+      strcpy(cstatement[3], "=");
+      for (j = 2; j < k; ++j) {
+        for (h = 0; h < STATEMENT_PART_SIZE; ++h) {
+          cstatement[j + 2][h] = statement[j][h];
+        }
+      }
+      dolet(cstatement);
+      ap("PHA");
+      // second statement:
+      strcpy(cstatement[2], "Areg");
+      strcpy(cstatement[3], "=");
+      for (j = k + 1; j < i; ++j) {
+        for (h = 0; h < STATEMENT_PART_SIZE; ++h) {
+          cstatement[j - k + 3][h] = statement[j][h];
+        }
+      }
+      dolet(cstatement);
+      ap("PHA");
+      situation = 1;
+    }
+    else if (push1 == 1 && push2 == 1) { // two pushes plus swaps
+      // second statement first:
+      strcpy(cstatement[2], "Areg");
+      strcpy(cstatement[3], "=");
+      for (j = k + 1; j < i; ++j) {
+        for (h = 0; h < STATEMENT_PART_SIZE; ++h) {
+          cstatement[j - k + 3][h] = statement[j][h];
+        }
+      }
+      dolet(cstatement);
+      ap("PHA");
+
+      // first statement second
+      strcpy(cstatement[2], "Areg");
+      strcpy(cstatement[3], "=");
+      for (j = 2; j < k; ++j) {
+       for (h = 0; h < STATEMENT_PART_SIZE; ++h) {
+          cstatement[j + 2][h] = statement[j][h];
+        }
+      }
+      dolet(cstatement);
+      ap("PHA");
+
+      // now change operator
+      // > or <= swap
+      if (!strncmp(statement[k], ">\0", 2)) strcpy(statement[k], "<");
+      if (SMATCH(k, "<=")) strcpy(statement[k], ">=");
+      situation = 2;
+    }
+    else if (push1 == 1 && strncmp(statement[k], ">\0", 2) && !SMATCH(k, "<=")) {
+      // first statement only, no swap
+      strcpy(cstatement[2], "Areg");
+      strcpy(cstatement[3], "=");
+      for (j = 2; j < k; ++j) {
+        for (h = 0; h < STATEMENT_PART_SIZE; ++h) {
+          cstatement[j + 2][h] = statement[j][h];
+        }
+      }
+      dolet(cstatement);
+      //ap("PHA");
+      situation = 3;
+    }
+    else if (push1 == 1) {
+      // first statement only, swap
+      strcpy(cstatement[2], "Areg");
+      strcpy(cstatement[3], "=");
+      for (j = 2; j < k; ++j) {
+        for (h = 0; h < STATEMENT_PART_SIZE; ++h) {
+          cstatement[j + 2][h] = statement[j][h];
+        }
+      }
+      dolet(cstatement);
+      ap("PHA");
+
+      // now change operator
+      // > or <= swap
+      if (!strncmp(statement[k], ">\0", 2)) strcpy(statement[k], "<\0");
+      if (SMATCH(k, "<=")) strcpy(statement[k], ">=");
+
+      // swap pushes and vars:
+      push1 = 0;
+      push2 = 1;
+      strcpy(statement[2], statement[k + 1]);
+      situation = 4;
+    }
+    else if (push2 == 1 && strncmp(statement[k], ">\0", 2) && !SMATCH(k, "<=")) {
+      // second statement only, no swap:
+      strcpy(cstatement[2], "Areg");
+      strcpy(cstatement[3], "=");
+      for (j = k + 1; j < i; ++j) {
+        for (h = 0; h < STATEMENT_PART_SIZE; ++h) {
+          cstatement[j - k + 3][h] = statement[j][h];
+        }
+      }
+      dolet(cstatement);
+      ap("PHA");
+      situation = 5;
+    }
+    else if (push2 == 1) {
+      // second statement only, swap:
+      strcpy(cstatement[2], "Areg");
+      strcpy(cstatement[3], "=");
+      for (j = k + 1; j < i; ++j) {
+        for (h = 0; h < STATEMENT_PART_SIZE; ++h) {
+          cstatement[j - k + 3][h] = statement[j][h];
+        }
+      }
+      dolet(cstatement);
+      //ap("PHA");
+      // now change operator
+      // > or <= swap
+      if (!strncmp(statement[k], ">\0",2)) strcpy(statement[k], "<\0");
+      if (SMATCH(k, "<=")) strcpy(statement[k], ">=");
+
+      // swap pushes and vars:
+      push1 = 1;
+      push2 = 0;
+      strcpy(statement[k + 1], statement[2]);
+      situation = 6;
+    }
+    else { // should never get here
+      prerror("Parse error in complex if-then statement\n");exit(1);
+    }
+
+    if (situation != 6 && situation != 3) {
+      ap("TSX"); //index to stack
+      if (push1) ap("PLA");
+      if (push2) ap("PLA");
+    }
+    if (push1 && push2)
+      strcpy(cstatement[2], " 2[TSX]");
+    else if (push1)
+      strcpy(cstatement[2], " 1[TSX]");
+    else
+      strcpy(cstatement[2], statement[2]);
+    strcpy(cstatement[3], statement[k]);
+    if (push2)
+      strcpy(cstatement[4], " 1[TSX]");
+    else
+      strcpy(cstatement[4], statement[k+1]);
+    for (j = 5; j < 40; ++j) strcpy(cstatement[j], statement[j - 5 + i]);
+    strcpy(cstatement[0], statement[0]);// copy label
+    if (situation != 4 && situation != 5)
+      strcpy(Areg, cstatement[2]); // attempt to suppress superfluous LDA
+
+    if (not && statement[k][0] == '&') {
+      shiftdata(cstatement, 5);
+      cstatement[5][0] = ')';
+      cstatement[5][1] = '\0';
+      shiftdata(cstatement, 2);
+      shiftdata(cstatement, 2);
+      cstatement[2][0] = '!';
+      cstatement[2][1] = '\0';
+      cstatement[3][0] = '(';
+      cstatement[3][1] = '\0';
+    }
+    strcpy(cstatement[1], "if");
+    if (statement[i][0] == 't')
+      doif(cstatement); // okay to recurse
+    else if (statement[i][0] == '&') {
+      if (situation != 4 && situation != 5)  // [REVENG] fix courtesy batari!
+        printf("; todo: this LDA is spurious and should be prevented ->");
+      keywords(cstatement); // statement still has booleans - attempt to reanalyze
+    }
+    else {
+      prerror("if-then too complex for logical OR\n");exit(1);
+    }
+    Aregmatch = 0;
+    freemem(deallocstatement);
+    return;
+  }
   index |= getindex(statement[2], &getindex0[0]);
   if (!SMATCH(3, "then"))
     index |= getindex(statement[4], &getindex1[0]) << 1;
@@ -1840,7 +2702,22 @@ void doif(char **statement) {
   if (index & 2) loadindex(&getindex1[0]);
   // todo:check for cmp #0--useless except for <, > to clear carry
   if (!SMATCH(3, "then")) {
-    ap("CMP %s", indexpart(statement[4], index & 2));
+    char *opcode;
+    if (statement[3][0] == '&') {
+      if (not) {
+        statement[3][0] = '='; // force beq/bne below
+        statement[3][1] = '\0';
+      }
+      else {
+        statement[3][0] = '<'; // force beq/bne below
+        statement[3][1] = '>';
+        statement[3][2] = '\0';
+      }
+      opcode = "AND";
+    }
+    else
+      opcode = "CMP";
+    ap("%s %s", opcode, indexpart(statement[4], index & 2));
   }
 
   if (!islabel(statement)) { // then linenumber
@@ -1927,7 +2804,7 @@ void displayoperation(char *opcode, char *operand, int index) {
       ap("TSX");
       ap("STY $00,x");
       ap("SEC");
-      ap("SBC $100,x");
+      ap("SBC $00,x");
     }
     else if (opcode[0] == '/') {
       // operands swapped
@@ -1938,15 +2815,24 @@ void displayoperation(char *opcode, char *operand, int index) {
       ap("TSX");
       ap("INX");
       ap("TXS");
-      ap("%s $100,x", opcode + 1);
+      ap("%s $00,x", opcode + 1);
     }
   }
   else
     ap("%s %s", opcode + 1, indexpart(operand, index));
 }
 
+// [REVENG] "dec" is variation of "let" that uses decimal mode {
+void dec(char **cstatement) {
+  decimal = 1;
+  ap("SED");
+  dolet(cstatement);
+  ap("CLD");
+  decimal = 0;
+}
+
 void dolet(char **cstatement) {
-  int i, j = 0, bit = 0, k, index = 0,
+  int i, j = 0, bit = 0, k, index = 0, immediate = 0,
       score[6] = { 0, 0, 0, 0, 0, 0 },
       Aregmatch = 0,
       fixpoint1, fixpoint2, fixpoint3 = 0,
@@ -1955,11 +2841,12 @@ void dolet(char **cstatement) {
   char getindex0[STATEMENT_PART_SIZE], getindex1[STATEMENT_PART_SIZE], getindex2[STATEMENT_PART_SIZE],
        **statement, *getbitvar,
        Aregcopy[STATEMENT_PART_SIZE],
+       operandcopy[STATEMENT_PART_SIZE],
        **deallocstatement,
        **rpn_statement, // expression in rpn
-       rpn_stack[100][100], // prolly doesn't need to be this big
+       rpn_stack[200][200], // prolly doesn't need to be this big
        **atomic_statement, // singular statements to recurse back to here
-       tempstatement1[100], tempstatement2[100];
+       tempstatement1[200], tempstatement2[200];
 
   strcpy(Aregcopy, "index-invalid");
 
@@ -1993,16 +2880,16 @@ void dolet(char **cstatement) {
     // complex statement here, hopefully.
     // convert equation to reverse-polish notation so we can express it in terms of
     // atomic equations and stack pushes/pulls
-    rpn_statement = (char**)malloc(sizeof(char*) * 100);
-    for (i = 0; i < 100; ++i) {
-      rpn_statement[i] = (char*)malloc(sizeof(char) * 100);
-      for (k = 0; k < 100; ++k) rpn_statement[i][k] = '\0';
+    rpn_statement = (char**)malloc(sizeof(char*) * 200);
+    for (i = 0; i < 200; ++i) {
+      rpn_statement[i] = (char*)malloc(sizeof(char) * 200);
+      for (k = 0; k < 200; ++k) rpn_statement[i][k] = '\0';
     }
 
     atomic_statement = (char**)malloc(sizeof(char*) * 10);
     for (i = 0; i < 10; ++i) {
-      atomic_statement[i] = (char*)malloc(sizeof(char) * 100);
-      for (k = 0; k < 100; ++k) atomic_statement[i][k] = '\0';
+      atomic_statement[i] = (char*)malloc(sizeof(char) * 200);
+      for (k = 0; k < 200; ++k) atomic_statement[i][k] = '\0';
     }
 
     // this converts expression to rpn
@@ -2048,7 +2935,7 @@ void dolet(char **cstatement) {
     sp = 0; // now use as pointer into rpn_statement
     while (sp < numrpn) {
       // clear atomic statement cache
-      for (i = 0; i < 10; ++i) for (k = 0; k < 100; ++k) atomic_statement[i][k] = '\0';
+      for (i = 0; i < 10; ++i) for (k = 0; k < 200; ++k) atomic_statement[i][k] = '\0';
       if (isoperator(rpn_statement[sp][0])) {
         // operator: need stack pull as 2nd arg
         // Areg=Areg (op) stackpull
@@ -2093,7 +2980,7 @@ void dolet(char **cstatement) {
       }
     }
     // done, now assign A-reg to original value
-    for (i = 0; i < 10; ++i) for (k = 0; k < 100; ++k) atomic_statement[i][k] = '\0';
+    for (i = 0; i < 10; ++i) for (k = 0; k < 200; ++k) atomic_statement[i][k] = '\0';
     strcpy(atomic_statement[2], statement[2]);
     strcpy(atomic_statement[3], "=");
     strcpy(atomic_statement[4], "Areg");
@@ -2148,6 +3035,7 @@ void dolet(char **cstatement) {
     }
     else if ((getbitvar = strtok(statement[4], "{"))) {
       // assign one bit to another
+      // removed NOP Abs to eventually support 0840 bankswitching
       // I haven't a clue if this will actually work!
       ap("LDA %s", getbitvar + (getbitvar[0] == '!' ? 1 : 0));
       ap("AND #%d", _BV((int)statement[4][strlen(getbitvar) + 1] - '0'));
@@ -2158,11 +3046,11 @@ void dolet(char **cstatement) {
         printf("%c", statement[2][i]);
       }
       printf("\n");
-      ap("PLP");
-      ap(".byte $%c0, $03", getbitvar[0] == '!' ? 'F' : 'D'); // bad, bad way to do BEQ addr + 5
-
       ap("AND #%d", 255 ^ _BV(bit));
-      ap(".byte $0C"); // NOP absolute to skip next two bytes
+      ap("PLP");
+      ap(".byte $%c0, $02". getbitvar[0] == '!' ? 'D' : 'F'); // bad, bad way to do BEQ addr + 5
+
+      //ap(".byte $0C"); // NOP absolute to skip next two bytes
       ap("ORA #%d", _BV(bit));
     }
     else {
@@ -2228,7 +3116,10 @@ void dolet(char **cstatement) {
       ap("EOR rand16");
       printf(" endif\n");
     }
-    else jsr("randomize");
+    else if (bs == 28)
+      ap("LDA rand");
+    else
+      jsr("randomize");
   }
   else if (SMATCH(2, "score") && !SMATCH(2, "scorec")) {
     // break up into three parts
@@ -2241,18 +3132,22 @@ void dolet(char **cstatement) {
         score[j] = number(statement[6][i]);
         if (score[j] < 10 && score[j] >= 0) j++;
       }
-      ap("LDA score+2");
-      if (statement[6][0] >= '@')
-        ap("ADC %s", statement[6]);
-      else
-        ap("ADC #$%d%d", score[1], score[0]);
-      ap("STA score+2");
-      ap("LDA score+1");
-      if (score[0] > 9)
-        ap("ADC #0");
-      else
-        ap("ADC #$%d%d", score[3], score[2]);
-      ap("STA score+1");
+      if (score[0] || score[1]) {
+        ap("LDA score+2");
+        if (statement[6][0] > 0x3FU)
+          ap("ADC %s", statement[6]);
+        else
+          ap("ADC #$%d%d", score[1], score[0]);
+        ap("STA score+2");
+      }
+      if (score[0] || score[1] || score[2] || score[3]) {
+        ap("LDA score+1");
+        if (score[0] > 9)
+          ap("ADC #0");
+        else
+          ap("ADC #$%d%d", score[3], score[2]);
+        ap("STA score+1");
+      }
       ap("LDA score");
       if (score[0] > 9)
         ap("ADC #0");
@@ -2306,7 +3201,8 @@ void dolet(char **cstatement) {
     && !strncmp(statement[2], statement[4], STATEMENT_PART_SIZE)
     && !SMATCH(2, "Areg")
     && (statement[6][1] == '\0' || statement[6][1] == ' ' || statement[6][1] == '\n')
-  ) { // var=var +/- something
+    && !decimal // [REVENG] suppress INC when using "dec" command
+  ) { // var = var +/- something
     strcpy(Areg, "invalid");
     if (fixpoint1 == 4 && fixpoint2 == 4) {
       if (CMATCH(5, '+')) {
@@ -2376,6 +3272,13 @@ void dolet(char **cstatement) {
           ap("LDY %s", statement[6]);
           ap("LDX %s", fracpart(statement[4]));
           ap("LDA %s%s", immedtok(statement[4]), statement[4]);
+          jsrbank1("Add44to88");
+          ap("STX %s", fracpart(statement[2]));
+        }
+        else if (fixpoint1 == 8 && (fixpoint3 & 8) && fixpoint2 == 4) {
+          ap("LDY %s", statement[4]);
+          ap("LDX %s", fracpart(statement[6]));
+          ap("LDA %s%s", immedtok(statement[6]), statement[6]);
           jsrbank1("Add44to88");
           ap("STX %s", fracpart(statement[2]));
         }
@@ -2461,6 +3364,12 @@ void dolet(char **cstatement) {
       displayoperation("|ORA", statement[6], index & 4);
     }
     else if (CMATCH(5, '*')) {
+      if (isimmed(statement[4]) && !isimmed(statement[6]) && checkmul(atoi(statement[4]))) {
+        // swap operands to avoid mul routine
+        strcpy(operandcopy, statement[4]); // place here temporarily
+        strcpy(statement[4], statement[6]);
+        strcpy(statement[6], operandcopy);
+      }
       if (fixpoint2 == 4) ap("LDA %s", statement[4]);
       if (!isimmed(statement[6]) || !checkmul(atoi(statement[6]))) {
         displayoperation("*LDY", statement[6], index & 4);
@@ -2538,6 +3447,12 @@ void dolet(char **cstatement) {
       else
         ap("LDA #%d", (int)(atof(statement[4]) * 16.0));
     }
+    else if (fixpoint1 == 8 && fixpoint2 == 0) {
+      // should handle 8.8=number w/o point or int var
+      ap("LDA #0");
+      ap("STA %s", fracpart(statement[2]));
+      ap("LDA %s%s", immedtok(statement[4]), statement[4]);
+    }
     // else if (fixpoint1 == 0 && fixpoint1 == 8) {
     //   ap("LDA %s", statement[4]);
     // }
@@ -2550,8 +3465,11 @@ void dolet(char **cstatement) {
 
 void dogoto(char **statement) {
   int anotherbank = 0;
-  if (SMATCH(3, "bank"))
+  if (SMATCH(3, "bank")) {
     anotherbank = (int)(statement[3][4]) - '0';
+    if (statement[3][5] >= '0' && statement[3][5] <= '9')
+      anotherbank = anotherbank * 10 + (int)(statement[3][5]) - '0';
+  }
   else {
     ap("JMP .%s", statement[2]);
     return;
@@ -2582,8 +3500,11 @@ void gosub(char **statement) {
   //  fprintf(stderr, "Max. nested gosubs exceeded in line %s\n", statement[0]);
   //  exit(1);
   //}
-  if (SMATCH(3, "bank"))
+  if (SMATCH(3, "bank")) {
     anotherbank = (int)(statement[3][4]) - '0';
+    if (statement[3][5] >= '0' && statement[3][5] <= '9')
+      anotherbank = anotherbank * 10 + (int)(statement[3][5]) - '0';
+  }
   else {
     ap("JSR .%s", statement[2]);
     return;
@@ -2592,8 +3513,15 @@ void gosub(char **statement) {
   // if here, we're jsr'ing to another bank
   // we need to switch banks
   ap("STA temp7");
+
   // first create virtual return address
-  ap("LDA #>(ret_point%d-1)", ++numjsrs);
+
+  // [REVENG] if it's 64k banks, store the bank directly in the high nybble
+  if (bs == 64)
+    ap("LDA #(((>(ret_point%d-1)) & $0F) | $%1x0)", ++numjsrs, bank - 1);
+  else
+    ap("LDA #>(ret_point%d-1)", ++numjsrs);
+
   ap("PHA");
   ap("LDA #<(ret_point%d-1)", numjsrs);
   ap("PHA");
@@ -2618,7 +3546,7 @@ void gosub(char **statement) {
 
 void set(char **statement) {
   char **pass2const;
-  int i;
+  int i, v;
   int valid_kernel_combos[] = {
     // C preprocessor should turn these into numbers!
     _BV(KERN_PLAYER1COLORS),
@@ -2658,12 +3586,21 @@ void set(char **statement) {
     else if (!strncasecmp(statement[3], "pal", 3)) {
       // 36 and 48 scanlines, respectively
       strcpy(redefined_variables[numredefvars++], "overscan_time = 82");
-      strcpy(redefined_variables[numredefvars++], "vblank_time = 57");
+      strcpy(redefined_variables[numredefvars++], "vblank_time = 58"); // [REVENG] Changed 57 to 58
     }
     else prerror("set TV: invalid TV type\n");
   }
   else if (SMATCH(2, "smartbranching"))
     smartbranching = SMATCH(3, "on");
+  else if (SMATCH(2, "dpcspritemax")) {
+    // [REVENG]
+    v = atoi(statement[3]);
+    if (v == 0 || v > 9) {
+      prerror("set dpcspritemax: invalid value\n");
+      exit(1);
+    }
+    sprintf(redefined_variables[numredefvars++], "dpcspritemax = %d", v);
+  }
   else if (SMATCH(2, "romsize"))
     set_romsize(statement[3]);
   else if (!strncmp(statement[2], "optimization", 5)) { // Allow "optim"
@@ -2687,7 +3624,18 @@ void set(char **statement) {
     while (((unsigned char)statement[i][0] > (unsigned char)64) && ((unsigned char)statement[i][0] < (unsigned char)123)) {
       if (SMATCH(i, "readpaddle")) {
         strcpy(redefined_variables[numredefvars++], "readpaddle = 1");
-        kernel_options |= _BV(KERN_READPADDLE);
+        if (bs == 28) {
+          printf("DPC_kernel_options = INPT0+$40\n");
+          return;
+        }
+        else
+          kernel_options |= _BV(KERN_READPADDLE);
+      }
+      else if (SMATCH(i, "collision")) {
+        if (bs == 28) {
+          printf("DPC_kernel_options = INPT0%s\n", check_colls(statement[i]) == 7 ? "+$40" : "");
+          return;
+        }
       }
       else if (SMATCH(i, "player1colors")) {
         strcpy(redefined_variables[numredefvars++], "player1colors = 1");
@@ -2747,6 +3695,16 @@ void set(char **statement) {
       create_includes("multisprite.inc");
       ROMpf = true;
     }
+    else if (SMATCH(3, "DPC")) {
+      multisprite = 2;
+      strcpy(redefined_variables[numredefvars++], "multisprite = 2");
+      create_includes("DPCplus.inc");
+      bs = 28;
+      last_bank = 7;
+      strcpy(redefined_variables[numredefvars++], "bankswitch_hotspot = $1FF6");
+      strcpy(redefined_variables[numredefvars++], "bankswitch = 28");
+      strcpy(redefined_variables[numredefvars++], "bs_mask = 7");
+    }
     else if (!strncmp(statement[3], "multisprite_no_include", 11)) { // Allow "multisprite"
       multisprite = true;
       strcpy(redefined_variables[numredefvars++], "multisprite = 1");
@@ -2777,6 +3735,15 @@ void dopop() {
   ap("PLA");
 }
 
+// [REVENG]
+void hotspotcheck(char *linenumber) {
+  if (bs) { // if bankswitching, check for reverse branches from $1fXX that trigger hotspots...
+    printf(" if ( (((((#>*)&$1f)*256)|(#<.%s))>=bankswitch_hotspot) && (((((#>*)&$1f)*256)|(#<.%s))<=(bankswitch_hotspot+bs_mask)) )\n", linenumber, linenumber);
+    printf("   echo \"WARNING: branch near the end of bank %d may accidentally trigger a bankswitch. Reposition code there if bad things happen.\"\n", bank);
+    printf(" endif\n");
+  }
+}
+
 void branch(char *linenumber, const char *bra1, const char *bra2) {
   removeCR(linenumber);
   if (smartbranching) {
@@ -2803,7 +3770,10 @@ void bvs(char *linenumber) { branch(linenumber, "VS", "VC"); }
 
 void drawscreen() {
   invalidate_Areg();
-  jsr("drawscreen");
+  if (multisprite == 2)
+    jsrbank1("drawscreen");
+  else
+    jsr("drawscreen");
 }
 
 void prerror(char *myerror) {
@@ -2846,4 +3816,188 @@ void header_write(FILE *header, char *filename) {
     fprintf(header, "%s\n", redefined_variables[i]);
 
   fclose(header);
+}
+
+void do_push(char **statement) {
+  int k, i = 2;
+  // syntax: push [vars]
+  // eg: vars can be a b c d e or a-e
+  removeCR(statement[4]);
+  if (CMATCH(3, '-')) { // range
+    ap("LDX #255-%s+%s", statement[4], statement[2]);
+    printf("pushlabel%s\n", statement[0]);
+    ap("LDA %s+1,x", statement[4]);
+    ap("STA DF7PUSH");
+    ap("INX");
+    ap("BMI pushlabel%s", statement[0]);
+  }
+  else {
+    while (!CMATCH(i, ':') && !CMATCH(i, '\0')) {
+      for (k = 0; k < STATEMENT_PART_SIZE; ++k)
+        if (statement[i][k] == '\n' || statement[i][k] == '\r') {
+          statement[i][k] = '\0';
+          break;
+        }
+      ap("LDA %s", statement[i++]);
+      ap("STA DF7PUSH");
+    }
+  }
+
+}
+
+void do_pull(char **statement) {
+  int k, i = 2, savei;
+  // syntax: pull [vars]
+  // eg: vars can be a b c d e or a-e
+  removeCR(statement[4]);
+  if (CMATCH(3, '-')) { // range
+    ap("LDX #%s-%s", statement[4], statement[2]); //[REVENG] fixed to preserve push/pull order
+    printf("pulllabel%s\n", statement[0]);
+    ap("LDA DF7DATA");
+    ap("STA %s,x", statement[2]);
+    ap("DEX");
+    ap("BPL pulllabel%s", statement[0]);
+  }
+  else {
+    //[REVENG] pull the variables in reverse order, so the push and pull statements are
+    //         identical per batari's comments. ie. "pull a b c" works after "pull a b c".
+    savei = i;
+    while (!CMATCH(i, ':') && !CMATCH(i, '\0')) i++;
+    --i;
+    while (i >= savei) {
+      for (k = 0; k < STATEMENT_PART_SIZE; ++k)
+        if (statement[i][k] == '\n' || statement[i][k] == '\r') {
+          statement[i][k] = '\0';
+          break;
+        }
+      ap("LDA DF7DATA");
+      ap("STA %s", statement[i--]);
+    }
+  }
+
+}
+
+void do_stack(char **statement) {
+  removeCR(statement[2]);
+  ap("LDA #<(STACKbegin+%s)", statement[2]);
+  ap("STA DF7LOW");
+  ap("LDA #(>(STACKbegin+%s)) & $0F", statement[2]);
+  ap("STA DF7HI");
+}
+
+void bkcolors(char **statement) {
+  char data[200], label[200];
+  int l = 0;
+  if (multisprite == 2) {
+    sprintf(label, "backgroundcolor%s\n", statement[0]);
+    removeCR(label);
+    ap("LDA #<BKCOLS");
+    ap("STA DF0LOW");
+    ap("LDA #(>BKCOLS) & $0F");
+    ap("STA DF0HI");
+    ap("LDA #<%s", label);
+    ap("STA PARAMETER");
+    ap("LDA #((>%s) & $0f) | (((>%s) / 2) & $70)", label, label); // DPC+
+    ap("STA PARAMETER");
+    ap("LDA #0");
+    ap("STA PARAMETER");
+
+    sprintf(sprite_data[sprite_index++], "%s\n", label);
+    while (1) {
+      if ((!fgets(data, sizeof(data), stdin) || (data[0] <= '9' && data[0] >= '0')) && data[0] != 'e') {
+        prerror("Error: Missing \"end\" keyword at end of bkcolors declaration\n");
+        exit(1);
+      }
+      line++;
+      if (MATCH(data, "end")) break;
+      sprintf(sprite_data[sprite_index++], "\t.byte %s",data);
+      l++;
+    }
+    if (l > 255)
+      prerror("Error: too much data in bkcolors declaration\n");
+    ap("LDA #%d",l);
+    ap("STA PARAMETER");
+    ap("LDA #1");
+    ap("STA CALLFUNCTION");
+    return; // get out
+  }
+  else {
+    prerror("Error: bkcolors only works in DPC+ kernels\n");
+    exit(1);
+  }
+}
+
+void scorecolors(char **statement) {
+  int height = 0, i = 0; // height can change
+  char data[200], label[200];
+  ap("LDA #<scoredata");
+  ap("STA DF0LOW");
+
+  ap("LDA #((>scoredata) & $0f)");
+  ap("STA DF0HI");
+  for (i = 0; i < 9; ++i) {
+    if (!fgets(data, sizeof(data), stdin)) {
+      prerror("Error: Not enough data for scorecolor declaration\n");
+      exit(1);
+    }
+    line++;
+    if (MATCH(data, "end")) break;
+    if (i == 8) {
+      prerror("Error: Missing \"end\" keyword at end of scorecolor declaration\n");
+      exit(1);
+    }
+    ap("LDA %s%s", immedtok(data), data);
+    ap("STA DF0WRITE");
+  }
+}
+
+void domacro(char **statement) {
+  int k, j = 1, i = 3;
+  macroactive = true;
+  printf(" MAC %s\n", statement[2]);
+
+  while (!CMATCH(i, ':') && !CMATCH(i, '\0')) {
+    for (k = 0; k < STATEMENT_PART_SIZE; ++k)
+      if (statement[i][k] == '\n' || statement[i][k] == '\r') {
+        statement[i][k] = '\0';
+        break;
+      }
+    if (SMATCH(i, "const"))
+      strcpy(constants[numconstants++], statement[i + 1]); // record to const queue
+    else
+      printf("%s SET {%d}\n", statement[i], j++);
+    i++;
+  }
+}
+
+void callmacro(char **statement) {
+  int k, i = 3;
+  macroactive = true;
+  printf(" %s", statement[2]);
+
+  while (!CMATCH(i, ':') && !CMATCH(i, '\0')) {
+    for (k = 0; k < STATEMENT_PART_SIZE; ++k)
+      if (statement[i][k] == '\n' || statement[i][k] == '\r') {
+        statement[i][k] = '\0';
+        break;
+      }
+    if (isimmed(statement[i]))
+      printf(" #%s,", statement[i]); // assuming the assembler doesn't mind extra commas
+    else
+      printf(" %s,", statement[i]);  // assuming the assembler doesn't mind extra commas
+    i++;
+  }
+  printf("\n");
+}
+
+void doextra(char *extrano) {
+  extraactive = true;
+  static int extra = 0;
+  printf("extra set %d\n", ++extra);
+  //printf(".extra%c", extrano[5]);
+  //if (extrano[6] != ':') printf("%c", extrano[6]);
+  //printf("\n");
+  printf(" MAC extra%c", extrano[5]);
+  if (extrano[6] != ':') printf("%c", extrano[6]);
+  printf("\n");
 }

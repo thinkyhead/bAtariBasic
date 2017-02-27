@@ -1,8 +1,10 @@
+# The bB generic-Unix makefile. Should work with most unixy OSes.
 SHELL=/bin/sh
 CHMOD=chmod
 CP=cp
 RM=rm
-CFLAGS=-O2
+CFLAGS=-O0
+#CFLAGS=-O2 -g
 ifneq (${HOSTTYPE},)
  CFLAGS+=-arch ${HOSTTYPE}
 endif
@@ -11,7 +13,7 @@ LEX=lex
 LEXFLAGS=-t
 CCC=${CC} ${CFLAGS}
 
-all:            2600basic preprocess postprocess optimize
+all: 2600basic preprocess postprocess optimize bbfilter
 
 2600basic: 2600bas.c statements.c keywords.c statements.h keywords.h
 	${CCC} -o 2600basic 2600bas.c statements.c keywords.c
@@ -20,19 +22,34 @@ postprocess: postprocess.c
 	${CCC} -o postprocess postprocess.c
 
 preprocess: preprocess.lex
-	${LEX} ${LEXFLAGS}<preprocess.lex>lex.yy.c
+	${LEX} ${LEXFLAGS} <preprocess.lex >lex.yy.c
 	${CCC} -o preprocess lex.yy.c
 	${RM} -f lex.yy.c
 
 optimize: optimize.lex
-	${LEX} ${LEXFLAGS}<optimize.lex>lex.yy.c
+	${LEX} ${LEXFLAGS} -i <optimize.lex >lex.yy.c
 	${CCC} -o optimize lex.yy.c
 	${RM} -f lex.yy.c
 
-install:        all
+bbfilter: bbfilter.c
+	${CC} ${CFLAGS} -o bbfilter bbfilter.c
+
+distclean:
+	make -f makefile.linux32 clean
+	make -f makefile.xcmp.win32 clean
+	make -f makefile.xcmp.osx clean
+
+dist:
+	make clean
+	make distclean
+	make -f makefile.linux32
+	make -f makefile.xcmp.win32
+	make -f makefile.xcmp.osx
+
+install: all
 
 clean:
-	${RM} -f a.out core 2600basic preprocess postprocess optimize
+	${RM} -f a.out core 2600basic preprocess postprocess optimize bbfilter
 
 love:
 	@echo "not war"

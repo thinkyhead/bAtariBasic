@@ -28,6 +28,7 @@ void next(char **);
 void gosub(char **);
 void doif(char **);
 void dolet(char **);
+void dec(char **);
 void rem(char **);
 void set(char **);
 void dogoto(char **);
@@ -40,6 +41,17 @@ void drawscreen(void);
 void prerror(char *);
 void header_open(FILE *);
 void header_write(FILE *, char *);
+
+void doend();
+void do_push(char **statement);
+void do_pull(char **statement);
+void do_stack(char **statement);
+void bkcolors(char **statement);
+void scorecolors(char **statement);
+void domacro(char **statement);
+void callmacro(char **statement);
+void doextra(char *extrano);
+void removeCR(char *);
 
 void doreboot();
 int linenum();

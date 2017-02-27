@@ -5,6 +5,9 @@ Copyright 2005-2007 by Fred Quimby
 
 bAtariBASIC continuing development, with improved support for Unix / macOS.
 
+## 64K Support by RevEng
+The `64K-Support` branch contains additional code changes to `master` to support DPC+ and 64K banked ROM based on the [64K bB code by RevEng](http://atariage.com/forums/topic/214909-bb-with-native-64k-cart-support-11dreveng) (version 1.1d-39). Most of the RevEng code is included verbatim, except where updated code applies. The key advantage to this repository is that the differences between the original bB 1.0, the `master` branch, and the `64K-Support` branch are easy to see in the commits.
+
 ## bAtariBASIC Reborn
 
 The last release of **bAtari Basic** was version 1.0 in 2007, and it's getting pretty long-in-the-tooth, so I've decided to make a fork for needed improvements, hosting on GitHub to make the project more visible and help with collaboration. See `bB/README.txt` for the original credits and instructions. I'll add updated summaries to this README as the project progresses.
