@@ -12,11 +12,6 @@ fufu
      lda #41+128;was 37 - do more w/c code
      sta TIM64T
 
-     ; run possible vblank bB code
-     ifconst vblank_bB_code
-         jsr vblank_bB_code
-     endif
-
      ; adjust for pfpos?
 
      ; set zero to properly enter C code
@@ -62,6 +57,18 @@ copyfromfetcherloop
      bmi copyfromfetcherloop
 
      jsr kernel_setup
+     sta WSYNC
+     ldy #$80
+     sty HMP0
+     sty HMP1
+     sty HMM0 
+     sty HMM1
+     sty HMBL
+
+     ; run possible vblank bB code
+     ifconst vblank_bB_code
+         jsr vblank_bB_code
+     endif
 
      jsr set_fetchers
 
@@ -142,12 +149,16 @@ fuu
      lda INTIM
      bmi fuu
      sta WSYNC
-     ldy #$80
-     sty HMP0
-     sty HMP1
-     sty HMM0
-     sty HMM1
-     sty HMBL
+;     ldy #$80
+;     sty HMP0
+;     sty HMP1
+;     sty HMM0 
+;     sty HMM1
+;     sty HMBL
+; relocated code above prior to vblank, to allow for Cosmic Ark starfield
+; and/or skewed players
+ sleep 17 
+
      lda #KERNEL_LINES
      sta TIM64T
      lda #1
