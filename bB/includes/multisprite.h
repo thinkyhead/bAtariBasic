@@ -2,22 +2,22 @@ missile0x = $80
 missile1x = $81
 ballx = $82
 
-objecty = $83
-missile0y = $83
-missile1y = $84
-bally = $85
-
 ; multisprite stuff below - 5 bytes each starting with spritex
 
-SpriteIndex = $86
+SpriteIndex = $83
 
-player0x = $87
-NewSpriteX = $88		;		X position
-player1x = $88
-player2x = $89
-player3x = $8A
-player4x = $8B
-player5x = $8C
+player0x = $84
+NewSpriteX = $85		;		X position
+player1x = $85
+player2x = $86
+player3x = $87
+player4x = $88
+player5x = $89
+
+objecty = $8A
+missile0y = $8A
+missile1y = $8B
+bally = $8C
 
 player0y = $8D
 NewSpriteY = $8E			;		Y position
@@ -47,8 +47,8 @@ player0pointer = $A2
 player0pointerlo = $A2
 player0pointerhi = $A3
 
-;P0Top = $A4
-P0Top = temp5
+;P0Top = temp5
+P0Top = $CF ; changed to hard value to avoid dasm issues
 P0Bottom = $A4
 P1Bottom = $A5
 
@@ -92,7 +92,8 @@ lifecolor = $C0
 pfscorecolor = $C0
 aux4 = $C0
 
-P1display = temp2 ; temp2 and temp3
+;P1display = temp2 ; temp2 and temp3
+P1display = $cc ; changed to hard value to avoid dasm issues
 lifepointer = $c1
 lives = $c2
 pfscore1 = $c1
@@ -102,20 +103,21 @@ aux6 = $c2
 
 playfieldpos = $C3
 
-RepoLine = temp4
+;RepoLine = temp4
+RepoLine = $ce ; changed to hard value to avoid dasm issues
 
-scorepointers = $C4
+pfheight = $C4
+scorepointers = $C5
 
-temp1 = $CA ;used by kernel.  can be used in program too, but
-temp2 = $CB ;are obliterated when drawscreen is called.
-temp3 = $CC
-temp4 = $CD
-temp5 = $CE
-temp6 = $CF
-temp7 = $D0 ; This is used to aid in bankswitching
+temp1 = $CB ;used by kernel.  can be used in program too, but
+temp2 = $CC ;are obliterated when drawscreen is called.
+temp3 = $CD
+temp4 = $CE
+temp5 = $CF
+temp6 = $D0
+temp7 = $D1 ; This is used to aid in bankswitching
 
-score = $D1
-pfheight = $D4
+score = $D2
 scorecolor = $D5 ;need to find other places for these, possibly...
 rand = $D6
 
@@ -194,5 +196,3 @@ stack4 = $f9
      jmp BS_return
    endif
  ENDM
-
-

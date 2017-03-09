@@ -1,7 +1,8 @@
  processor 6502
  include "vcs.h"
  include "macro.h"
- include "2600basic.h"
+ include "multisprite.h"
+ include "superchip.h"
  include "2600basic_variable_redefs.h"
  ifconst bankswitch
   if bankswitch == 8

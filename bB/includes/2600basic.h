@@ -97,62 +97,61 @@ var45 = $D1
 var46 = $D2
 var47 = $D3
 
-temp7 = $D4 ; This is used to aid in bankswitching
+A = $d4
+a = $d4
+B = $d5
+b = $d5
+C = $d6
+c = $d6
+D = $d7
+d = $d7
+E = $d8
+e = $d8
+F = $d9
+f = $d9
+G = $da
+g = $da
+H = $db
+h = $db
+I = $dc
+i = $dc
+J = $dd
+j = $dd
+K = $de
+k = $de
+L = $df
+l = $df
+M = $e0
+m = $e0
+N = $e1
+n = $e1
+O = $e2
+o = $e2
+P = $e3
+p = $e3
+Q = $e4
+q = $e4
+R = $e5
+r = $e5
+S = $e6
+s = $e6
+T = $e7
+t = $e7
+U = $e8
+u = $e8
+V = $e9
+v = $e9
+W = $ea
+w = $ea
+X = $eb
+x = $eb
+Y = $ec
+y = $ec
+Z = $ed
+z = $ed
 
-playfieldpos = $D5
-
-A = $d6
-a = $d6
-B = $d7
-b = $d7
-C = $d8
-c = $d8
-D = $d9
-d = $d9
-E = $da
-e = $da
-F = $db
-f = $db
-G = $dc
-g = $dc
-H = $dd
-h = $dd
-I = $de
-i = $de
-J = $df
-j = $df
-K = $e0
-k = $e0
-L = $e1
-l = $e1
-M = $e2
-m = $e2
-N = $e3
-n = $e3
-O = $e4
-o = $e4
-P = $e5
-p = $e5
-Q = $e6
-q = $e6
-R = $e7
-r = $e7
-S = $e8
-s = $e8
-T = $e9
-t = $e9
-U = $ea
-u = $ea
-V = $eb
-v = $eb
-W = $ec
-w = $ec
-X = $ed
-x = $ed
-Y = $ee
-y = $ee
-Z = $ef
-z = $ef
+temp7 = $ee ; This is used to aid in bankswitching
+playfieldpos = $ef
 
 ; available for other uses, or if unused, provide more stack space
 
@@ -196,14 +195,38 @@ stack4 = $f9
 
  ifconst superchip
 playfieldbase = $10D0
+ include superchip.h
  else
 playfieldbase = $A4
+ endif
+
+ ifnconst pfhalfwidth
+pfwidth = 4
+PF1L = PF1
+PF2L = PF2
+PF1R = PF1
+PF2R = PF2
+pfadjust = 0
+ else
+pfwidth = 2
+   ifconst pfcenter
+PF1L = $3F ; no effect
+PF2L = PF2
+PF1R = $3F
+PF2R = PF2 ; no effect
+pfadjust = 1
+   else
+PF1L = PF1
+PF2L = PF2
+PF1R = $3F ; no effect
+PF2R = $3F ; no effect
+pfadjust = 0
+   endif
  endif
 
 ; define playfield start based on height
  ifnconst pfres
 playfield = playfieldbase
  else
-playfield = playfieldbase-(pfres-12)*4
+playfield = playfieldbase-(pfres-12*(4/pfwidth))*pfwidth
  endif
-

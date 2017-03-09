@@ -41,9 +41,9 @@ minikernel ; display up to 6 lives on screen
  sta COLUPF
  endif
 
- cmp #8
+ cpy #8
  bcc zero_7
- cmp #16
+ cpy #16
  bcc eight_15
  lda #255
  sta temp1
@@ -95,7 +95,10 @@ nolives
  sta PF1
  lda temp2
  sta PF2 ;cycle 48!
- sleep 14
+ pla ; waste 14 cycles in 4 bytes
+ pha ;
+ pla ;
+ pha ; Shouldn't hurt anything!
  lda #0
  dey
  sta PF1
@@ -117,7 +120,7 @@ lifenusiz1table
 lifenusiz0table
  .byte 0,0,0,1,1,3,3,3
 
-statustable
+statustable ; warning: page-wrapping might cause issues
 ;0-7 and 16+
  .byte %00000000
  .byte %00000001

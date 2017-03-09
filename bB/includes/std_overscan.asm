@@ -51,47 +51,99 @@ done_debugscore
 
  
 overscan
+  ifconst interlaced
+    PHP
+    PLA 
+    EOR #4 ; flip interrupt bit
+    PHA
+    PLP
+    AND #4 ; isolate the interrupt bit
+    TAX ; save it for later
+  endif
+
+overscanloop
  lda INTIM ;wait for sync
- bmi overscan
+ bmi overscanloop
 doneoverscan
 ;do VSYNC
+
+ ifconst interlaced
+   CPX #4
+   BNE oddframevsync
+ endif
+
  lda #2
  sta WSYNC
  sta VSYNC
  STA WSYNC
  STA WSYNC
- LDA #0
+ lsr
  STA WSYNC
  STA VSYNC
  sta VBLANK
  ifnconst overscan_time
- lda #37+128
+   lda #37+128
  else
- lda #overscan_time+128
+   lda #overscan_time+128
  endif
  sta TIM64T
 
- ifconst legacy
- if legacy < 100
- ldx #4
+     ifconst interlaced
+         jmp postsync 
+
+oddframevsync
+         sta WSYNC
+
+         LDA ($80,X) ; 11 waste
+         LDA ($80,X) ; 11 waste
+         LDA ($80,X) ; 11 waste
+
+         lda #2
+         sta VSYNC
+         sta WSYNC
+         sta WSYNC
+         sta WSYNC
+
+         LDA ($80,X) ; 11 waste
+         LDA ($80,X) ; 11 waste
+         LDA ($80,X) ; 11 waste
+
+         lda #0
+         sta VSYNC
+         sta VBLANK
+         ifnconst overscan_time
+             lda #37+128
+         else
+             lda #overscan_time+128
+         endif
+         sta TIM64T
+
+postsync
+     endif
+
+     ifconst legacy
+       if legacy < 100
+         ldx #4
 adjustloop
- lda player0x,x
- sec
- sbc #14 ;?
- sta player0x,x
- dex
- bpl adjustloop
- endif
- endif
- if (<*)>$F0
- align 256, $EA
- endif
-  sta WSYNC
-  ldx #4
-  SLEEP 3
-HorPosLoop       ;     5
-  lda player0x,X  ;+4   9
-  sec           ;+2  11
+         lda player0x,x
+         sec
+         sbc #14 ;?
+         sta player0x,x
+         dex
+         bpl adjustloop
+       endif
+     endif
+     if ((<*)>$e9)&&((<*)<$fa)
+       repeat ($fa-(<*))
+       nop
+       repend
+     endif
+     sta WSYNC
+     ldx #4
+     SLEEP 3
+HorPosLoop     ; 5
+     lda player0x,X ;+4 9
+     sec ;+2 11
 DivideLoop
   sbc #15
   bcs DivideLoop;+4  15

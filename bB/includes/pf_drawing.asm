@@ -4,9 +4,9 @@
 
 pfclear ; clears playfield - or fill with pattern
  ifconst pfres
- ldx #pfres*4-1
+ ldx #pfres*pfwidth-1
  else
- ldx #47
+ ldx #47-(4-pfwidth)*12 ; will this work?
  endif
 pfclear_loop
  ifnconst superchip
@@ -27,7 +27,9 @@ setuppointers
  sta temp1
  tya
  asl
- asl ; multiply y pos by 4
+ if pfwidth=4
+  asl ; multiply y pos by 4
+ endif ; else multiply by 2
  clc
  adc temp1 ; add them together to get actual memory location offset
  tay ; put the value in y
@@ -109,7 +111,9 @@ pfvline
  inc temp3 ; increase final x by 1 
  lda temp3
  asl
- asl ; multiply by 4
+ if pfwidth=4
+   asl ; multiply by 4
+ endif ; else multiply by 2
  sta temp3 ; store it
  ; Thanks to Michael Rideout for fixing a bug in this code
  ; right now, temp1=y=starting memory location, temp3=final
@@ -118,8 +122,10 @@ keepgoingy
  jsr plotpoint
  iny
  iny
- iny
- iny
+ if pfwidth=4
+   iny
+   iny
+ endif
  cpy temp3
  bmi keepgoingy
  RETURN
@@ -158,6 +164,7 @@ pixeloff
  rts
 
 setbyte
+ ifnconst pfcenter
  .byte $80
  .byte $40
  .byte $20
@@ -166,6 +173,7 @@ setbyte
  .byte $04
  .byte $02
  .byte $01
+ endif
  .byte $01
  .byte $02
  .byte $04

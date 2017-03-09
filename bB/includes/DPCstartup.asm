@@ -18,36 +18,34 @@ clearmem
  pha
  bne clearmem
  sty temp1
- ifnconst multisprite
- ifconst pfrowheight
- lda #pfrowheight
- else
- ifconst pfres
- lda #(96/pfres)
- else
- lda #8
- endif
- endif
- sta playfieldpos
- endif
- ldx #5
-initscore
- lda #<scoretable
- sta scorepointers,x 
+ ldx #8
+ stx playfieldpos
+ stx FASTFETCH
+ ldx #8
+ lda #224
+inityloop
+ sta player1y,x
  dex
- bpl initscore
+ bpl inityloop
+
  lda #1
  sta CTRLPF
- ora INTIM
- sta rand
+ lda INTIM
+ sta RWRITE0
+ lda #0
+ STA DF0FRACINC
+ STA DF1FRACINC
+ STA DF2FRACINC
+ STA DF3FRACINC
+ STA DF4FRACINC
+ STA DF6FRACINC
+ lda #<USERSTACK
+ STA DF7LOW
+ lda #(>USERSTACK) & $0F
+ STA DF7HI
+ lda #255
+ sta CALLFUNCTION ; zero-fill fetcher
 
- ifconst multisprite
-   jsr multisprite_setup
- endif
-
- ifnconst bankswitch
-   jmp game
- else
    lda #>(game-1)
    pha
    lda #<(game-1)
@@ -56,4 +54,3 @@ initscore
    pha
    ldx #1
    jmp BS_jsr
- endif

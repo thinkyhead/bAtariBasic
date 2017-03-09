@@ -3,7 +3,7 @@
 ; they will appear in the generated assembly file
 ;
 ; header file
-multispriteheader.asm
+multispritesuperchipheader.asm
 
 ; this is the batari Basic file
 ; for bankswitching, the concatenator will only parse until the end of 

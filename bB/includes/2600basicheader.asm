@@ -16,6 +16,16 @@
      ORG $1000
      RORG $1000
   endif
+  if bankswitch == 64
+     ORG $1000
+     RORG $1000
+  endif
  else
    ORG $F000
+ endif
+
+ ifconst bankswitch_hotspot
+ if bankswitch_hotspot = $083F ; 0840 bankswitching hotspot
+   .byte 0 ; stop unexpected bankswitches
+ endif
  endif

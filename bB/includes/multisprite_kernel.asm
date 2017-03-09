@@ -82,6 +82,11 @@ WaitForOverscanEnd
       endif
 	sta TIM64T
 
+; run possible vblank bB code
+ ifconst vblank_bB_code
+   jsr vblank_bB_code
+ endif
+
  	jsr setscorepointers
 	jsr SetupP1Subroutine
 
@@ -97,6 +102,7 @@ WaitForOverscanEnd
 
 	;--set up player 0 pointer
 
+ dec player0y
 	lda player0pointer ; player0: must be run every frame!
 	sec
 	sbc player0y
@@ -132,11 +138,6 @@ cycle74_HMCLR
 
 
 	jsr KernelSetupSubroutine
-
-; run possible vblank bB code
- ifconst vblank_bB_code
-   jsr vblank_bB_code
- endif
 
 WaitForVblankEnd
 	lda INTIM
@@ -309,6 +310,7 @@ sixdigscore
 	sec
 	sbc player0height
 	sta player0pointer
+ inc player0y
 
  ifconst vblank_time
  ifconst screenheight
@@ -371,7 +373,6 @@ sixdigscore
 
 
 ;-------------------------------------------------------------------------
-; echo *
 ; repeat $f147-*
 ; brk
 ; repend
@@ -395,7 +396,8 @@ SkipDrawP1K1				;	11
 
 KernelRoutine
  ifnconst screenheight
- jsr wastetime ; waste 12 cycles
+ sleep 12
+ ; jsr wastetime ; waste 12 cycles
  else
  sleep 6
  endif
@@ -465,7 +467,9 @@ BackFromSkipDrawP1
 	stx PF1temp2
 	sta PF2temp2
 	dey
+ bmi pagewraphandler
 	lda (PF1pointer),y
+cyclebalance
 	sta PF1temp1
 	lda (PF2pointer),y
 	sta PF2temp1
@@ -482,7 +486,6 @@ BackFromSkipDrawP1
 
 	cpy missile0y
 	php			;+6	 1
- ldx #1
 	
 
 	dey			;+2	15
@@ -511,6 +514,9 @@ BackFromRepoKernel
 
 donewkernel
 	jmp DoneWithKernel	;+3	56
+
+pagewraphandler
+ jmp cyclebalance
 
 ;-------------------------------------------------------------------------
  
@@ -559,25 +565,26 @@ WaitDrawP0KR				;	47
 ;-----------------------------------------------------------
 
 noUpdateXKR
- sleep 3
+ ldx #1
+ cpy.w P0Top
  JMP retXKR
 
 skipthis
  ldx #1
-; sleep 2
  jmp goback
 
 RepoKernel			;	22	crosses page boundary
 	tya
 	and pfheight			;+2	26
 	bne noUpdateXKR		;+2	28
-	dex			;+2	30
+        tax
+;	dex			;+2	30
 	dec pfpixelheight
 ;	stx Temp		;+3	35
 ;	SLEEP 3
-retXKR
 
 	cpy P0Top		;+3	42
+retXKR
 	beq SwitchDrawP0KR	;+2	44
 	bpl WaitDrawP0KR	;+2	46
 	lda (player0pointer),Y	;+5	51
@@ -670,8 +677,6 @@ BackFromSwitchDrawP0KV
 	lda SpriteGfxIndex,X	;+4	31
 	tax				;+2	33
 ;
-	lda NewSpriteY,X		;+4	46
-	sta P1Bottom		;+3	49	adjust for height below
 
 
 
@@ -684,12 +689,12 @@ BackFromSwitchDrawP0KV
 ;	lda SpriteGfxIndex,X	;+4	31
 ;	tax				;+2	33
 ;fuck2
-	lda P1Bottom		;+3	36
+	lda NewSpriteY,X		;+4	46
 	sec				;+2	38
 	sbc spriteheight,X	;+4	42
 	sta P1Bottom		;+3	45
 
-
+ sleep 6
 	lda player1pointerlo,X	;+4	49
 	sbc P1Bottom		;+3	52	carry should still be set
 	sta P1display		;+3	55
@@ -919,6 +924,7 @@ SetupP1Subroutine
 ; detect overlap of sprites in table 2
 ; if overlap, do regular sort in table2, then place one sprite at top of table 1, decrement # displayed
 ; if no overlap, do regular sort in table 2 and table 1
+fsstart
  ldx #255
 copytable
  inx
@@ -942,6 +948,7 @@ sortloop
  tax
  lda NewSpriteY,x
  sec
+ clc
  sbc temp1
  bcc largerXislower
 
@@ -954,7 +961,7 @@ sortloop
 overlapping
  dec temp3
  ldx temp2
- inx
+; inx
  jsr shiftnumbers
  jmp skipswapGfxtable
 
@@ -965,20 +972,22 @@ largerXislower ; (temp1>A)
  tax
  tya
  eor #$FF
+ sbc #1
+ bcc overlapping
  cmp spriteheight,x
  bcs notoverlapping
 
  dec temp3
  ldx temp2
- inx
+; inx
  jsr shiftnumbers
  jmp skipswapGfxtable 
 notoverlapping
- ldx temp2 ; swap display table
- ldy SpriteGfxIndex+1,x
- lda SpriteGfxIndex,x
- sty SpriteGfxIndex,x
- sta SpriteGfxIndex+1,x 
+; ldx temp2 ; swap display table
+; ldy SpriteGfxIndex+1,x
+; lda SpriteGfxIndex,x
+; sty SpriteGfxIndex,x
+; sta SpriteGfxIndex+1,x 
 
 skipswapGfxtable
  ldx temp2 ; swap sort table
@@ -997,9 +1006,9 @@ checktoohigh
  tax
  lda NewSpriteY,x
  ifconst screenheight
- cmp #screenheight-2
+ cmp #screenheight-3
  else
- cmp #$56
+ cmp #$55
  endif
  bcc nonetoohigh
  dec temp3
@@ -1016,7 +1025,7 @@ shiftnumbers
  ; if x=2: 2=3, 3=4, 4=2
  ; if x=1: 1=2, 2=3, 3=4, 4=1
  ; if x=0: 0=1, 1=2, 2=3, 3=4, 4=0
- ldy SpriteGfxIndex,x
+; ldy SpriteGfxIndex,x
 swaploop
  cpx #4
  beq shiftdone 
@@ -1025,7 +1034,7 @@ swaploop
  inx
  jmp swaploop
 shiftdone
- sty SpriteGfxIndex,x
+; sty SpriteGfxIndex,x
  rts
 
  ifconst debugscore
