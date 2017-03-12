@@ -5,6 +5,7 @@ CP=cp
 RM=rm
 CFLAGS=-O0
 #CFLAGS=-O2 -g
+HOSTTYPE=i386
 ifneq (${HOSTTYPE},)
  CFLAGS+=-arch ${HOSTTYPE}
 endif
