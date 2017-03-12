@@ -1,9 +1,33 @@
+#include "statements.h"
+#include "keywords.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-#include "statements.h"
-#include "keywords.h"
+
+void loadindex(char *);
+void jsr(char *);
+int findlabel(char **, int i);
+void callfunction(char **);
+void mul(char **, int);
+void divd(char **, int);
+void remove_trailing_commas(char *);
+void removeCR(char * const linenumber);
+int number(unsigned char);
+int getindex(char *mystatement, char *myindex);
+int findpoint(char *item);
+void printindex(char *mystatement, int myindex);
+int isimmed(char *value);
+int printimmed(char *value);
+
+void bmi(char *);
+void bpl(char *);
+void bne(char *);
+void beq(char *);
+void bcc(char *);
+void bcs(char *);
+void bvc(char *);
+void bvs(char *);
 
 void doreboot()
 {
@@ -499,7 +523,7 @@ void newbank(int bankno)
   if (bankno == 1) return;  // "bank 1" is ignored
 
   fullpath[0]='\0';
-  if (includespath)
+  if (includespath[0])
   {
     strcpy(fullpath,includespath);
     if ((includespath[strlen(includespath)-1]=='\\') || (includespath[strlen(includespath)-1]=='/'))
@@ -770,7 +794,7 @@ void create_includes(char *includesfile)
   if (includesfile_already_done) return;
   includesfile_already_done=1;
   fullpath[0]='\0';
-  if (includespath)
+  if (includespath[0])
   {
     strcpy(fullpath,includespath);
     if ((includespath[strlen(includespath)-1]=='\\') || (includespath[strlen(includespath)-1]=='/'))
@@ -823,8 +847,8 @@ void create_includes(char *includesfile)
     if (writeline) 
     {
       if (!strncasecmp(line,"bb.asm\0",6)) 
-	if (user_includes[0] != '\0') fprintf(includeswrite,user_includes);
-      fprintf(includeswrite,line);
+	if (user_includes[0] != '\0') fprintf(includeswrite,"%s",user_includes);
+      fprintf(includeswrite,"%s",line);
     }
   }
   fclose(includesread);
@@ -1127,7 +1151,7 @@ void incline()
   line++;
 }
 
-int getline()
+int bbgetline()
 {
   return line;
 }
@@ -2229,7 +2253,7 @@ void doif(char **statement)
     else if (statement[3][0] == '<') bcc(statement[6]);
     if (statement[3][0] == '>') bcs(statement[6]);
     if (!strncmp(statement[3],"then\0",4)) 
-      if (not) beq(statement[4]); else bne(statement[4]);
+      not ? beq(statement[4]) : bne(statement[4]);
 
   }
   else // then statement
@@ -2321,9 +2345,9 @@ void displayoperation(char *opcode, char *operand, int index)
       printf("	TAY\n");
       printf("	PLA\n");
       printf("	TSX\n");
-      printf("	STY $00,x\n",opcode+1);
+      printf("	STY $00,x\n");
       printf("	SEC\n");
-      printf("	SBC $100,x\n",opcode+1);
+      printf("	SBC $100,x\n");
     }
     else if (opcode[0] == '/')
     {
@@ -2570,7 +2594,7 @@ printf("; complex statement detected\n");
       printf("\n");
       printf("	ORA #%d\n",1<<bit);//(int)pow(2,bit));
     }
-    else if (getbitvar=strtok(statement[4],"{"))
+    else if ((getbitvar=strtok(statement[4],"{")))
     {  // assign one bit to another
 	// I haven't a clue if this will actually work!
       if (getbitvar[0] == '!') 
@@ -2758,7 +2782,7 @@ printf("; complex statement detected\n");
       if (statement[5][0] == '+')
       {
 	printf("	LDA %s\n",statement[2]);
-	printf("	CLC %s\n");
+	printf("	CLC\n");
 	printf("	ADC #16\n");
 	printf("	STA %s\n",statement[2]);
 	free(deallocstatement);
@@ -2767,7 +2791,7 @@ printf("; complex statement detected\n");
       if (statement[5][0] == '-')
       {
 	printf("	LDA %s\n",statement[2]);
-	printf("	SEC %s\n");
+	printf("	SEC\n");
 	printf("	SBC #16\n");
 	printf("	STA %s\n",statement[2]);
 	free(deallocstatement);
@@ -3473,7 +3497,7 @@ int number(unsigned char value)
   return ((int)value)-48;
 }
 
-void removeCR(char *linenumber)  // remove trailing CR from string
+void removeCR(char * const linenumber)  // remove trailing CR from string
 {
   while ((linenumber[strlen(linenumber)-1]==(unsigned char)0x0A) ||
       (linenumber[strlen(linenumber)-1]==(unsigned char)0x0D))

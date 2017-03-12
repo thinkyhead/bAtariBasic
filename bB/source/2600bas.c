@@ -18,8 +18,8 @@ int main(int argc, char *argv[]) {
   char displaycode[500];
   FILE *header;
   int multiplespace=0;
-  const char *includes_file="default.inc";
-  const char *filename="2600basic_variable_redefs.h";
+  char *includes_file="default.inc";
+  char *filename="2600basic_variable_redefs.h";
   char *path=0;
     // get command line arguments
   while ((i=getopt(argc, argv, "i:r:")) != -1) {
@@ -106,7 +106,7 @@ int main(int argc, char *argv[]) {
       }
 
     }
-    if (j>40) fprintf(stderr,"(%d) Warning: long line\n",getline());
+    if (j>40) fprintf(stderr,"(%d) Warning: long line\n",bbgetline());
     if (statement[0][0]=='\0')
     {
       sprintf(statement[0],"L0%d",unnamed++);
