@@ -75,7 +75,7 @@ int linenumber=1;
 <collision>^")" printf("%s",yytext);
 <collision>")" {printf("%s",yytext);BEGIN(INITIAL);}
 
-"step"[ ]+"-" printf("step -",yytext);
+"step"[ ]+"-" printf("step -");
 "#"            printf("%s", yytext);  
 "$"            printf("%s", yytext);  
 "%"            printf("%s", yytext);  
@@ -113,4 +113,4 @@ int linenumber=1;
 .               {fprintf(stderr,"(%d) Parse error: unrecognized character \"%s\"\n",linenumber,yytext);  exit(1);}
 %%
   int yywrap(void) {      return 1;  } 
-main(){yylex();}
+int main() { yylex(); }
